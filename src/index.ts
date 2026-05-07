@@ -16,7 +16,20 @@ type DispatchPlan = {
   payload: Record<string, unknown>;
 };
 
+type StatusResponse = {
+  status: string;
+  testRunId?: string;
+};
+
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
+const TERMINAL_RUN_STATUSES = new Set([
+  "passed",
+  "healed",
+  "failed",
+  "process-error",
+  "cancelled",
+]);
+const SUCCESS_RUN_STATUSES = new Set(["passed", "healed"]);
 
 async function run(): Promise<void> {
   const apiKey = core.getInput("api-key", { required: true });
@@ -69,14 +82,127 @@ async function run(): Promise<void> {
   core.setOutput("job-name", jobName);
   core.info(`Dispatched. Job name: ${jobName}`);
 
+  if (!core.getBooleanInput("wait")) {
+    await core.summary
+      .addHeading("Checksum AI test run dispatched", 3)
+      .addList([
+        `Mode: \`${plan.mode}\``,
+        `Job name: \`${jobName}\``,
+        `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
+      ])
+      .write();
+    return;
+  }
+
+  await waitForCompletion(baseUrl, apiKey, jobName, plan.mode);
+}
+
+async function waitForCompletion(
+  baseUrl: string,
+  apiKey: string,
+  jobName: string,
+  mode: ExecMode
+): Promise<void> {
+  const pollIntervalMs = parsePositiveIntInput("poll-interval-seconds") * 1000;
+  const timeoutMs = parsePositiveIntInput("wait-timeout-seconds") * 1000;
+  const deadline = Date.now() + timeoutMs;
+  const statusUrl = `${baseUrl}/public-api/v2/execution/status/${encodeURIComponent(jobName)}`;
+
+  core.info(
+    `Waiting for terminal status (poll every ${pollIntervalMs / 1000}s, timeout ${timeoutMs / 1000}s)…`
+  );
+
+  let lastStatus = "unknown";
+  let testRunId = "";
+
+  while (Date.now() < deadline) {
+    const result = await fetchStatus(statusUrl, apiKey);
+    if (result === null) {
+      // Transient fetch failure — log and keep polling. Don't fail the
+      // action on a single status hiccup; the test run is still progressing.
+      core.warning("Status request failed; will retry.");
+    } else {
+      lastStatus = result.status;
+      if (result.testRunId) testRunId = result.testRunId;
+      core.info(`status=${lastStatus}`);
+      if (TERMINAL_RUN_STATUSES.has(lastStatus)) break;
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  const reachedTerminal = TERMINAL_RUN_STATUSES.has(lastStatus);
+  const finalStatus = reachedTerminal ? lastStatus : "timeout";
+
+  core.setOutput("status", finalStatus);
+  if (testRunId) core.setOutput("test-run-id", testRunId);
+
   await core.summary
-    .addHeading("Checksum AI test run dispatched", 3)
-    .addList([
-      `Mode: \`${plan.mode}\``,
-      `Job name: \`${jobName}\``,
-      `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
-    ])
+    .addHeading("Checksum AI test run", 3)
+    .addList(
+      [
+        `Mode: \`${mode}\``,
+        `Job name: \`${jobName}\``,
+        `Final status: \`${finalStatus}\``,
+        testRunId ? `Test run: \`${testRunId}\`` : "",
+      ].filter(Boolean)
+    )
     .write();
+
+  if (!reachedTerminal) {
+    core.setFailed(
+      `Timed out after ${timeoutMs / 1000}s waiting for run to terminate (last status: ${lastStatus}).`
+    );
+    return;
+  }
+  if (!SUCCESS_RUN_STATUSES.has(lastStatus)) {
+    core.setFailed(`Test run terminated with status: ${lastStatus}.`);
+    return;
+  }
+  core.info(`Test run terminated with status: ${lastStatus}.`);
+}
+
+async function fetchStatus(
+  url: string,
+  apiKey: string
+): Promise<StatusResponse | null> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { ChecksumAppCode: apiKey },
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) {
+    core.warning(`Status endpoint returned HTTP ${response.status}; will retry.`);
+    return null;
+  }
+  try {
+    const body = (await response.json()) as Partial<StatusResponse>;
+    if (typeof body.status !== "string") return null;
+    return {
+      status: body.status,
+      testRunId:
+        typeof body.testRunId === "string" ? body.testRunId : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parsePositiveIntInput(name: string): number {
+  const raw = core.getInput(name);
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`\`${name}\` must be a positive integer, got: ${raw}`);
+  }
+  return parsed;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function buildDispatchPlan(baseUrl: string): DispatchPlan {

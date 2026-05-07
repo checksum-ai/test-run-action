@@ -106,6 +106,9 @@ unless overridden.
 | `pr-number` | no | auto | Source PR number for heal progress comments. Auto-detected on `pull_request` events. |
 | `repo-name` | no | auto | Bare repo name (no owner). Auto-detected from `github.repository`. |
 | `metadata` | no | — | JSON object of free-form metadata attached to heal sessions. |
+| `wait` | no | `false` | When `true`, poll until the run reaches a terminal status; exit code reflects the outcome (`passed`/`healed` → 0, others → 1). |
+| `poll-interval-seconds` | no | `15` | Status poll interval when `wait: true`. |
+| `wait-timeout-seconds` | no | `1800` | Maximum time to wait for terminal status when `wait: true`. Action fails on timeout. |
 | `api-base-url` | no | `https://api.checksum.ai` | Override the API base URL (e.g., for staging). |
 
 *Provide exactly one of `grep`, `suite-ids`, `test-ids`, `collection-id`.
@@ -114,15 +117,39 @@ unless overridden.
 
 | Name | Description |
 | --- | --- |
-| `job-name` | Name of the dispatched job. Use it to query `/public-api/v2/execution/status/{jobName}` if you want to poll. |
+| `job-name` | Name of the dispatched job. Use it to query `/public-api/v2/execution/status/{jobName}` if you want to poll yourself. |
+| `status` | Final terminal status when `wait: true`: `passed`, `healed`, `failed`, `process-error`, `cancelled`, or `timeout`. Empty when `wait: false`. |
+| `test-run-id` | Test run UUID, populated when `wait: true` and the run reached a terminal status. |
 
 ## Failure behavior
 
-The action fails **only** when the dispatch HTTP call does not return 2xx. Test
-results — pass, fail, or healed — are reported asynchronously via PR comments
-from the Checksum pipeline; they do not affect this step's exit code. If you
-need a step that blocks the workflow on terminal status, poll the status
-endpoint with the `job-name` output.
+By default (`wait: false`) the action fails **only** when the dispatch HTTP
+call does not return 2xx. Test results — pass, fail, or healed — are reported
+asynchronously via PR comments from the Checksum pipeline; they do not affect
+this step's exit code.
+
+Set `wait: true` to make the action poll the status endpoint and exit based on
+the run outcome:
+
+| Final status | Exit |
+| --- | --- |
+| `passed`, `healed` | 0 (green) |
+| `failed`, `process-error`, `cancelled` | 1 (red) |
+| timeout reached | 1 (red) |
+
+```yaml
+- uses: checksum-ai/test-run-action@v1
+  with:
+    api-key: ${{ secrets.CHECKSUM_API_KEY }}
+    grep: 'checkout'
+    auto-heal: true
+    wait: true
+    wait-timeout-seconds: 1800
+```
+
+`wait: true` keeps a runner allocated for the full test-run duration (often
+5–25 minutes). Prefer `wait: false` plus the standard PR-comment notification
+when runner-minute cost matters.
 
 ## Development
 

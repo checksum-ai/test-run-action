@@ -29964,6 +29964,14 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
+const TERMINAL_RUN_STATUSES = new Set([
+    "passed",
+    "healed",
+    "failed",
+    "process-error",
+    "cancelled",
+]);
+const SUCCESS_RUN_STATUSES = new Set(["passed", "healed"]);
 async function run() {
     const apiKey = core.getInput("api-key", { required: true });
     const baseUrl = core
@@ -30002,14 +30010,107 @@ async function run() {
     }
     core.setOutput("job-name", jobName);
     core.info(`Dispatched. Job name: ${jobName}`);
+    if (!core.getBooleanInput("wait")) {
+        await core.summary
+            .addHeading("Checksum AI test run dispatched", 3)
+            .addList([
+            `Mode: \`${plan.mode}\``,
+            `Job name: \`${jobName}\``,
+            `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
+        ])
+            .write();
+        return;
+    }
+    await waitForCompletion(baseUrl, apiKey, jobName, plan.mode);
+}
+async function waitForCompletion(baseUrl, apiKey, jobName, mode) {
+    const pollIntervalMs = parsePositiveIntInput("poll-interval-seconds") * 1000;
+    const timeoutMs = parsePositiveIntInput("wait-timeout-seconds") * 1000;
+    const deadline = Date.now() + timeoutMs;
+    const statusUrl = `${baseUrl}/public-api/v2/execution/status/${encodeURIComponent(jobName)}`;
+    core.info(`Waiting for terminal status (poll every ${pollIntervalMs / 1000}s, timeout ${timeoutMs / 1000}s)…`);
+    let lastStatus = "unknown";
+    let testRunId = "";
+    while (Date.now() < deadline) {
+        const result = await fetchStatus(statusUrl, apiKey);
+        if (result === null) {
+            // Transient fetch failure — log and keep polling. Don't fail the
+            // action on a single status hiccup; the test run is still progressing.
+            core.warning("Status request failed; will retry.");
+        }
+        else {
+            lastStatus = result.status;
+            if (result.testRunId)
+                testRunId = result.testRunId;
+            core.info(`status=${lastStatus}`);
+            if (TERMINAL_RUN_STATUSES.has(lastStatus))
+                break;
+        }
+        await sleep(pollIntervalMs);
+    }
+    const reachedTerminal = TERMINAL_RUN_STATUSES.has(lastStatus);
+    const finalStatus = reachedTerminal ? lastStatus : "timeout";
+    core.setOutput("status", finalStatus);
+    if (testRunId)
+        core.setOutput("test-run-id", testRunId);
     await core.summary
-        .addHeading("Checksum AI test run dispatched", 3)
+        .addHeading("Checksum AI test run", 3)
         .addList([
-        `Mode: \`${plan.mode}\``,
+        `Mode: \`${mode}\``,
         `Job name: \`${jobName}\``,
-        `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
-    ])
+        `Final status: \`${finalStatus}\``,
+        testRunId ? `Test run: \`${testRunId}\`` : "",
+    ].filter(Boolean))
         .write();
+    if (!reachedTerminal) {
+        core.setFailed(`Timed out after ${timeoutMs / 1000}s waiting for run to terminate (last status: ${lastStatus}).`);
+        return;
+    }
+    if (!SUCCESS_RUN_STATUSES.has(lastStatus)) {
+        core.setFailed(`Test run terminated with status: ${lastStatus}.`);
+        return;
+    }
+    core.info(`Test run terminated with status: ${lastStatus}.`);
+}
+async function fetchStatus(url, apiKey) {
+    let response;
+    try {
+        response = await fetch(url, {
+            headers: { ChecksumAppCode: apiKey },
+        });
+    }
+    catch {
+        return null;
+    }
+    if (!response.ok) {
+        core.warning(`Status endpoint returned HTTP ${response.status}; will retry.`);
+        return null;
+    }
+    try {
+        const body = (await response.json());
+        if (typeof body.status !== "string")
+            return null;
+        return {
+            status: body.status,
+            testRunId: typeof body.testRunId === "string" ? body.testRunId : undefined,
+        };
+    }
+    catch {
+        return null;
+    }
+}
+function parsePositiveIntInput(name) {
+    const raw = core.getInput(name);
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`\`${name}\` must be a positive integer, got: ${raw}`);
+    }
+    return parsed;
+}
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 }
 function buildDispatchPlan(baseUrl) {
     // GitHub Actions sets INPUT_* env vars for every input declared in

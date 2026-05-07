@@ -52,6 +52,24 @@ inputs:
     description: 'JSON object of free-form metadata attached to each healing session, useful for tracing or correlation IDs.'
     required: false
 
+  # Wait-for-completion. When false (default) the action exits 0 as soon as
+  # the dispatch is accepted (15s typical) and lets the asynchronous PR-comment
+  # pipeline notify the user. When true, the action polls the status endpoint
+  # until the run terminates and exits with code 0 on `passed`/`healed` or
+  # 1 on `failed`/`process-error`/`cancelled`/timeout.
+  wait:
+    description: 'Poll the status endpoint until the run reaches a terminal status. When true the action exit code reflects the test outcome.'
+    required: false
+    default: 'false'
+  poll-interval-seconds:
+    description: 'How often to poll status when `wait` is true.'
+    required: false
+    default: '15'
+  wait-timeout-seconds:
+    description: 'Maximum time to wait for the run to terminate when `wait` is true. Action fails on timeout.'
+    required: false
+    default: '1800'
+
   # Plumbing.
   api-base-url:
     description: 'Checksum AI API base URL.'
@@ -61,6 +79,10 @@ inputs:
 outputs:
   job-name:
     description: 'Name of the dispatched test-run job, returned by the execution endpoint. Use it to query status via /public-api/v2/execution/status/{jobName}.'
+  status:
+    description: 'Final terminal status when `wait` is true (passed / healed / failed / process-error / cancelled / timeout). Empty when `wait` is false.'
+  test-run-id:
+    description: 'Test run UUID, populated when `wait` is true and the run reaches a terminal status.'
 
 runs:
   using: 'node20'
