@@ -8,7 +8,7 @@ branding:
 
 inputs:
   api-key:
-    description: 'Checksum AI API key. Pass via secrets, e.g. ${{ secrets.CHECKSUM_API_KEY }}.'
+    description: 'Checksum AI API key. Pass via a secret (see README for an example).'
     required: true
 
   # Execution mode — set exactly one of the following.
