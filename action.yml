@@ -1,0 +1,67 @@
+name: 'Checksum AI Test Run'
+description: 'Trigger a Checksum AI test run from CI, optionally with auto-heal.'
+author: 'Checksum AI'
+
+branding:
+  icon: 'play-circle'
+  color: 'blue'
+
+inputs:
+  api-key:
+    description: 'Checksum AI API key. Pass via secrets, e.g. ${{ secrets.CHECKSUM_API_KEY }}.'
+    required: true
+
+  # Execution mode — set exactly one of the following.
+  grep:
+    description: 'Substring or regex pattern matched against test names.'
+    required: false
+  suite-ids:
+    description: 'Comma-separated list of test suite UUIDs. Empty string means "run all suites with code".'
+    required: false
+  test-ids:
+    description: 'Comma-separated list of test UUIDs.'
+    required: false
+  collection-id:
+    description: 'A single test collection UUID.'
+    required: false
+
+  # Optional execution-time pass-throughs (grep mode only — backend constraint).
+  branch:
+    description: 'Branch of the TEST repository to check out for this run. Defaults to the test repo''s default branch when omitted. Only honored in grep mode.'
+    required: false
+  env-overrides:
+    description: 'JSON object of per-run environment variable overrides, e.g. ''{"BASE_URL":"https://pr-123.preview.example.com"}''. Only honored in grep mode.'
+    required: false
+
+  # Auto-heal options.
+  auto-heal:
+    description: 'Enable auto-heal-on-failure. When true, failing tests will trigger a healing pipeline and (by default) push fixes as a PR.'
+    required: false
+    default: 'false'
+  auto-create-pr:
+    description: 'When auto-heal is enabled, push healed tests as a PR. Defaults to true.'
+    required: false
+    default: 'true'
+  pr-number:
+    description: 'Source PR number for auto-heal progress comments. Auto-detected from the workflow event when running on pull_request / pull_request_target.'
+    required: false
+  repo-name:
+    description: 'Source repository name (just the bare repo, no owner). Auto-detected from github.repository when omitted.'
+    required: false
+  metadata:
+    description: 'JSON object of free-form metadata attached to each healing session, useful for tracing or correlation IDs.'
+    required: false
+
+  # Plumbing.
+  api-base-url:
+    description: 'Checksum AI API base URL.'
+    required: false
+    default: 'https://api.checksum.ai'
+
+outputs:
+  job-name:
+    description: 'Name of the dispatched test-run job, returned by the execution endpoint. Use it to query status via /public-api/v2/execution/status/{jobName}.'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

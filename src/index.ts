@@ -1,0 +1,258 @@
+import * as core from "@actions/core";
+import * as github from "@actions/github";
+
+type ExecMode = "grep" | "suite" | "tests" | "collection";
+
+type AutoHealBlock = {
+  autoCreatePR?: boolean;
+  prNumber?: number;
+  repoName?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type DispatchPlan = {
+  mode: ExecMode;
+  url: string;
+  payload: Record<string, unknown>;
+};
+
+const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
+
+async function run(): Promise<void> {
+  const apiKey = core.getInput("api-key", { required: true });
+  const baseUrl = core
+    .getInput("api-base-url")
+    .trim()
+    .replace(/\/+$/, "");
+
+  const plan = buildDispatchPlan(baseUrl);
+  attachAutoHealIfEnabled(plan.payload);
+
+  core.info(`Dispatching ${plan.mode} run → POST ${plan.url}`);
+  core.info(`Payload: ${JSON.stringify(redactPayload(plan.payload))}`);
+
+  const response = await fetch(plan.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ChecksumAppCode: apiKey,
+    },
+    body: JSON.stringify(plan.payload),
+  });
+
+  const bodyText = await response.text();
+  if (!TERMINAL_OK_STATUSES.has(response.status)) {
+    core.setFailed(
+      `Execution dispatch failed (HTTP ${response.status}). Body: ${bodyText}`
+    );
+    return;
+  }
+
+  let parsed: { name?: string } = {};
+  try {
+    parsed = JSON.parse(bodyText) as { name?: string };
+  } catch {
+    core.setFailed(
+      `Execution dispatch returned HTTP ${response.status} but body was not valid JSON: ${bodyText}`
+    );
+    return;
+  }
+
+  const jobName = parsed.name;
+  if (!jobName) {
+    core.setFailed(
+      `Execution dispatch returned HTTP ${response.status} but response had no "name" field: ${bodyText}`
+    );
+    return;
+  }
+
+  core.setOutput("job-name", jobName);
+  core.info(`Dispatched. Job name: ${jobName}`);
+
+  await core.summary
+    .addHeading("Checksum AI test run dispatched", 3)
+    .addList([
+      `Mode: \`${plan.mode}\``,
+      `Job name: \`${jobName}\``,
+      `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
+    ])
+    .write();
+}
+
+function buildDispatchPlan(baseUrl: string): DispatchPlan {
+  const grep = core.getInput("grep");
+  const suiteIds = core.getInput("suite-ids");
+  const testIds = core.getInput("test-ids");
+  const collectionId = core.getInput("collection-id");
+
+  const provided: Array<[string, string]> = [
+    ["grep", grep],
+    ["suite-ids", suiteIds],
+    ["test-ids", testIds],
+    ["collection-id", collectionId],
+  ].filter(([, value]) => value !== "") as Array<[string, string]>;
+
+  if (provided.length > 1) {
+    throw new Error(
+      `Provide exactly one execution mode input. Got: ${provided
+        .map(([k]) => k)
+        .join(", ")}.`
+    );
+  }
+  if (provided.length === 0) {
+    throw new Error(
+      "Provide one of: `grep`, `suite-ids`, `test-ids`, or `collection-id`."
+    );
+  }
+
+  const [mode] = provided[0]!;
+  if (mode === "grep") {
+    return planGrep(baseUrl, grep);
+  }
+  if (mode === "suite-ids") {
+    return planSuite(baseUrl, suiteIds);
+  }
+  if (mode === "test-ids") {
+    return planTests(baseUrl, testIds);
+  }
+  return planCollection(baseUrl, collectionId);
+}
+
+function planGrep(baseUrl: string, grep: string): DispatchPlan {
+  const payload: Record<string, unknown> = { grep };
+
+  const branch = core.getInput("branch");
+  if (branch) payload.branch = branch;
+
+  const envOverridesRaw = core.getInput("env-overrides");
+  if (envOverridesRaw) {
+    payload.envOverrides = parseJsonInput("env-overrides", envOverridesRaw);
+  }
+
+  return {
+    mode: "grep",
+    url: `${baseUrl}/public-api/v2/execution/grep`,
+    payload,
+  };
+}
+
+function planSuite(baseUrl: string, suiteIdsInput: string): DispatchPlan {
+  const suiteIds = parseCsv(suiteIdsInput);
+  const payload: Record<string, unknown> = {};
+  if (suiteIds.length > 0) payload.suiteIds = suiteIds;
+  return {
+    mode: "suite",
+    url: `${baseUrl}/public-api/v1/execution/suite`,
+    payload,
+  };
+}
+
+function planTests(baseUrl: string, testIdsInput: string): DispatchPlan {
+  const testIds = parseCsv(testIdsInput);
+  if (testIds.length === 0) {
+    throw new Error("`test-ids` must contain at least one UUID.");
+  }
+  return {
+    mode: "tests",
+    url: `${baseUrl}/public-api/v1/execution/tests`,
+    payload: { testIds },
+  };
+}
+
+function planCollection(baseUrl: string, collectionId: string): DispatchPlan {
+  return {
+    mode: "collection",
+    url: `${baseUrl}/public-api/v1/execution/collection/${encodeURIComponent(
+      collectionId
+    )}`,
+    payload: {},
+  };
+}
+
+function attachAutoHealIfEnabled(payload: Record<string, unknown>): void {
+  if (!core.getBooleanInput("auto-heal")) return;
+
+  const autoHeal: AutoHealBlock = {};
+  autoHeal.autoCreatePR = core.getBooleanInput("auto-create-pr");
+
+  const repoName = resolveRepoName();
+  if (repoName) autoHeal.repoName = repoName;
+
+  const prNumber = resolvePrNumber();
+  if (prNumber !== undefined) autoHeal.prNumber = prNumber;
+
+  const metadataRaw = core.getInput("metadata");
+  if (metadataRaw) {
+    autoHeal.metadata = parseJsonInput("metadata", metadataRaw) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  if (autoHeal.autoCreatePR && !autoHeal.repoName) {
+    throw new Error(
+      "auto-heal is enabled with auto-create-pr=true but `repo-name` could not be auto-detected and was not provided. Pass `repo-name:` explicitly or run on a workflow event that exposes github.repository."
+    );
+  }
+  if (autoHeal.prNumber !== undefined && !autoHeal.repoName) {
+    throw new Error(
+      "`pr-number` is set without a resolvable `repo-name`. Pass `repo-name:` explicitly."
+    );
+  }
+
+  payload.autoHeal = autoHeal;
+}
+
+function resolveRepoName(): string | undefined {
+  const explicit = core.getInput("repo-name");
+  if (explicit) return explicit;
+  // github.repository is "owner/repo"; backend matches on bare repo name.
+  const ghRepo = github.context.repo?.repo;
+  return ghRepo || undefined;
+}
+
+function resolvePrNumber(): number | undefined {
+  const explicit = core.getInput("pr-number");
+  if (explicit) {
+    const parsed = Number(explicit);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error(`\`pr-number\` must be a positive integer, got: ${explicit}`);
+    }
+    return parsed;
+  }
+  const fromEvent = github.context.payload?.pull_request?.number;
+  return typeof fromEvent === "number" ? fromEvent : undefined;
+}
+
+function parseCsv(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function parseJsonInput(name: string, raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`\`${name}\` must be a JSON object`);
+    }
+    return parsed as Record<string, unknown>;
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new Error(`\`${name}\` is not valid JSON: ${err.message}`);
+    }
+    throw err;
+  }
+}
+
+function redactPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  // Payload contains no secrets today, but keep this in case envOverrides ever
+  // forwards a sensitive value the workflow author classifies as such.
+  return payload;
+}
+
+run().catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err);
+  core.setFailed(message);
+});
