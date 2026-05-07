@@ -30013,34 +30013,53 @@ async function run() {
 }
 function buildDispatchPlan(baseUrl) {
     const grep = core.getInput("grep");
-    const suiteIds = core.getInput("suite-ids");
     const testIds = core.getInput("test-ids");
     const collectionId = core.getInput("collection-id");
-    const provided = [
-        ["grep", grep],
-        ["suite-ids", suiteIds],
-        ["test-ids", testIds],
-        ["collection-id", collectionId],
-    ].filter(([, value]) => value !== "");
+    // `suite-ids: ''` is a documented mode ("run all suites with code"), so
+    // distinguish "input set to empty string" from "input not provided at all"
+    // via env-var presence rather than value-truthiness.
+    const suiteIdsRaw = process.env["INPUT_SUITE-IDS"];
+    const suiteIdsProvided = suiteIdsRaw !== undefined;
+    const suiteIds = suiteIdsRaw ?? "";
+    const provided = [];
+    if (grep !== "")
+        provided.push({ mode: "grep" });
+    if (suiteIdsProvided)
+        provided.push({ mode: "suite-ids" });
+    if (testIds !== "")
+        provided.push({ mode: "test-ids" });
+    if (collectionId !== "")
+        provided.push({ mode: "collection-id" });
     if (provided.length > 1) {
         throw new Error(`Provide exactly one execution mode input. Got: ${provided
-            .map(([k]) => k)
+            .map((p) => p.mode)
             .join(", ")}.`);
     }
     if (provided.length === 0) {
         throw new Error("Provide one of: `grep`, `suite-ids`, `test-ids`, or `collection-id`.");
     }
-    const [mode] = provided[0];
-    if (mode === "grep") {
+    const mode = provided[0].mode;
+    warnOnIgnoredInputs(mode);
+    if (mode === "grep")
         return planGrep(baseUrl, grep);
-    }
-    if (mode === "suite-ids") {
+    if (mode === "suite-ids")
         return planSuite(baseUrl, suiteIds);
-    }
-    if (mode === "test-ids") {
+    if (mode === "test-ids")
         return planTests(baseUrl, testIds);
-    }
     return planCollection(baseUrl, collectionId);
+}
+function warnOnIgnoredInputs(mode) {
+    if (mode === "grep")
+        return;
+    const ignored = [];
+    if (core.getInput("branch"))
+        ignored.push("`branch`");
+    if (core.getInput("env-overrides"))
+        ignored.push("`env-overrides`");
+    if (ignored.length === 0)
+        return;
+    const verb = ignored.length === 1 ? "is" : "are";
+    core.warning(`${ignored.join(" and ")} ${verb} only honored in grep mode and will be ignored.`);
 }
 function planGrep(baseUrl, grep) {
     const payload = { grep };
@@ -30113,9 +30132,15 @@ function resolveRepoName() {
     const explicit = core.getInput("repo-name");
     if (explicit)
         return explicit;
-    // github.repository is "owner/repo"; backend matches on bare repo name.
-    const ghRepo = github.context.repo?.repo;
-    return ghRepo || undefined;
+    // GITHUB_REPOSITORY is "owner/repo"; backend matches on the bare repo name.
+    // Read the env var directly — `github.context.repo` is a throwing getter
+    // when the env var is absent, which would surface as a cryptic library
+    // message instead of our own validation guard below.
+    const ghRepo = process.env.GITHUB_REPOSITORY;
+    if (!ghRepo)
+        return undefined;
+    const parts = ghRepo.split("/");
+    return parts[parts.length - 1] || undefined;
 }
 function resolvePrNumber() {
     const explicit = core.getInput("pr-number");
