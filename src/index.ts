@@ -80,27 +80,26 @@ async function run(): Promise<void> {
 }
 
 function buildDispatchPlan(baseUrl: string): DispatchPlan {
+  // GitHub Actions sets INPUT_* env vars for every input declared in
+  // action.yml regardless of whether the caller set them, so we cannot
+  // distinguish "set to empty string" from "not set". Mode auto-detection
+  // therefore requires a non-empty value on exactly one mode input.
   const grep = core.getInput("grep");
+  const suiteIds = core.getInput("suite-ids");
   const testIds = core.getInput("test-ids");
   const collectionId = core.getInput("collection-id");
 
-  // `suite-ids: ''` is a documented mode ("run all suites with code"), so
-  // distinguish "input set to empty string" from "input not provided at all"
-  // via env-var presence rather than value-truthiness.
-  const suiteIdsRaw = process.env["INPUT_SUITE-IDS"];
-  const suiteIdsProvided = suiteIdsRaw !== undefined;
-  const suiteIds = suiteIdsRaw ?? "";
-
-  const provided: Array<{ mode: string }> = [];
-  if (grep !== "") provided.push({ mode: "grep" });
-  if (suiteIdsProvided) provided.push({ mode: "suite-ids" });
-  if (testIds !== "") provided.push({ mode: "test-ids" });
-  if (collectionId !== "") provided.push({ mode: "collection-id" });
+  const provided: Array<[string, string]> = [
+    ["grep", grep],
+    ["suite-ids", suiteIds],
+    ["test-ids", testIds],
+    ["collection-id", collectionId],
+  ].filter(([, value]) => value !== "") as Array<[string, string]>;
 
   if (provided.length > 1) {
     throw new Error(
       `Provide exactly one execution mode input. Got: ${provided
-        .map((p) => p.mode)
+        .map(([k]) => k)
         .join(", ")}.`
     );
   }
@@ -110,7 +109,7 @@ function buildDispatchPlan(baseUrl: string): DispatchPlan {
     );
   }
 
-  const mode = provided[0]!.mode;
+  const mode = provided[0]![0];
   warnOnIgnoredInputs(mode);
 
   if (mode === "grep") return planGrep(baseUrl, grep);
@@ -151,12 +150,13 @@ function planGrep(baseUrl: string, grep: string): DispatchPlan {
 
 function planSuite(baseUrl: string, suiteIdsInput: string): DispatchPlan {
   const suiteIds = parseCsv(suiteIdsInput);
-  const payload: Record<string, unknown> = {};
-  if (suiteIds.length > 0) payload.suiteIds = suiteIds;
+  if (suiteIds.length === 0) {
+    throw new Error("`suite-ids` must contain at least one UUID.");
+  }
   return {
     mode: "suite",
     url: `${baseUrl}/public-api/v1/execution/suite`,
-    payload,
+    payload: { suiteIds },
   };
 }
 

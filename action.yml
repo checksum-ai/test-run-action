@@ -16,7 +16,7 @@ inputs:
     description: 'Substring or regex pattern matched against test names.'
     required: false
   suite-ids:
-    description: 'Comma-separated list of test suite UUIDs. Empty string means "run all suites with code".'
+    description: 'Comma-separated list of test suite UUIDs.'
     required: false
   test-ids:
     description: 'Comma-separated list of test UUIDs.'

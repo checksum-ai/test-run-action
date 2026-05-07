@@ -28,7 +28,7 @@ action picks the matching public-API endpoint:
 | Input | Endpoint |
 | --- | --- |
 | `grep` | `POST /public-api/v2/execution/grep` |
-| `suite-ids` (or empty) | `POST /public-api/v1/execution/suite` |
+| `suite-ids` | `POST /public-api/v1/execution/suite` |
 | `test-ids` | `POST /public-api/v1/execution/tests` |
 | `collection-id` | `POST /public-api/v1/execution/collection/:id` |
 
@@ -40,11 +40,11 @@ action picks the matching public-API endpoint:
     grep: 'checkout'
     env-overrides: '{"BASE_URL":"https://pr-${{ github.event.pull_request.number }}.preview.example.com"}'
 
-# Suite — leave `suite-ids` blank to run all suites with code, or pass UUIDs.
+# Suite — pass one or more suite UUIDs.
 - uses: checksum-ai/test-run-action@v1
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
-    suite-ids: ''
+    suite-ids: 'a1b2c3d4-...,e5f6g7h8-...'
 
 # Tests — explicit UUIDs.
 - uses: checksum-ai/test-run-action@v1
@@ -96,7 +96,7 @@ unless overridden.
 | --- | --- | --- | --- |
 | `api-key` | yes | — | Checksum AI API key. |
 | `grep` | no* | — | Substring/regex matched against test names. |
-| `suite-ids` | no* | — | Comma-separated suite UUIDs. Empty = all suites with code. |
+| `suite-ids` | no* | — | Comma-separated suite UUIDs. |
 | `test-ids` | no* | — | Comma-separated test UUIDs. |
 | `collection-id` | no* | — | Single collection UUID. |
 | `branch` | no | — | Test-repo branch (grep mode only). Defaults to test repo's default branch. |
