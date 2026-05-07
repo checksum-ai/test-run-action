@@ -66,9 +66,8 @@ inputs:
     required: false
     default: '15'
   wait-timeout-seconds:
-    description: 'Maximum time to wait for the run to terminate when `wait` is true. Action fails on timeout.'
+    description: 'Maximum time to wait for the run to terminate when `wait` is true. When omitted the action waits indefinitely; the workflow job''s `timeout-minutes` is the upper bound.'
     required: false
-    default: '1800'
 
   # Plumbing.
   api-base-url:

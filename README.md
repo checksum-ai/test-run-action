@@ -108,7 +108,7 @@ unless overridden.
 | `metadata` | no | — | JSON object of free-form metadata attached to heal sessions. |
 | `wait` | no | `false` | When `true`, poll until the run reaches a terminal status; exit code reflects the outcome (`passed`/`healed` → 0, others → 1). |
 | `poll-interval-seconds` | no | `15` | Status poll interval when `wait: true`. |
-| `wait-timeout-seconds` | no | `1800` | Maximum time to wait for terminal status when `wait: true`. Action fails on timeout. |
+| `wait-timeout-seconds` | no | — | Maximum time to wait for terminal status when `wait: true`. When omitted, waits indefinitely; the workflow job's `timeout-minutes` is the upper bound. |
 | `api-base-url` | no | `https://api.checksum.ai` | Override the API base URL (e.g., for staging). |
 
 *Provide exactly one of `grep`, `suite-ids`, `test-ids`, `collection-id`.
@@ -144,12 +144,18 @@ the run outcome:
     grep: 'checkout'
     auto-heal: true
     wait: true
-    wait-timeout-seconds: 1800
 ```
 
 `wait: true` keeps a runner allocated for the full test-run duration (often
 5–25 minutes). Prefer `wait: false` plus the standard PR-comment notification
-when runner-minute cost matters.
+when runner-minute cost matters. Use the workflow job's `timeout-minutes` to
+cap the runner's lifetime; pass `wait-timeout-seconds:` only if you want a
+shorter cap than the job timeout.
+
+Note: the action reflects the **test run's** terminal status, not the
+auto-heal pipeline's outcome. `auto-heal: true` triggers healing
+asynchronously after a `failed` test run; healing progress is reported via
+the PR comment posted by the Checksum bot.
 
 ## Development
 

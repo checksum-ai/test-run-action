@@ -30025,13 +30025,13 @@ async function run() {
 }
 async function waitForCompletion(baseUrl, apiKey, jobName, mode) {
     const pollIntervalMs = parsePositiveIntInput("poll-interval-seconds") * 1000;
-    const timeoutMs = parsePositiveIntInput("wait-timeout-seconds") * 1000;
-    const deadline = Date.now() + timeoutMs;
+    const timeoutMs = parseOptionalPositiveIntInput("wait-timeout-seconds");
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs * 1000;
     const statusUrl = `${baseUrl}/public-api/v2/execution/status/${encodeURIComponent(jobName)}`;
-    core.info(`Waiting for terminal status (poll every ${pollIntervalMs / 1000}s, timeout ${timeoutMs / 1000}s)…`);
+    core.info(`Waiting for terminal status (poll every ${pollIntervalMs / 1000}s, timeout ${deadline === undefined ? "none" : `${timeoutMs}s`})…`);
     let lastStatus = "unknown";
     let testRunId = "";
-    while (Date.now() < deadline) {
+    while (deadline === undefined || Date.now() < deadline) {
         const result = await fetchStatus(statusUrl, apiKey);
         if (result === null) {
             // Transient fetch failure — log and keep polling. Don't fail the
@@ -30050,6 +30050,9 @@ async function waitForCompletion(baseUrl, apiKey, jobName, mode) {
     }
     const reachedTerminal = TERMINAL_RUN_STATUSES.has(lastStatus);
     const finalStatus = reachedTerminal ? lastStatus : "timeout";
+    const runUrl = testRunId
+        ? `https://app.checksum.ai/#/test-runs/${testRunId}`
+        : "";
     core.setOutput("status", finalStatus);
     if (testRunId)
         core.setOutput("test-run-id", testRunId);
@@ -30059,18 +30062,18 @@ async function waitForCompletion(baseUrl, apiKey, jobName, mode) {
         `Mode: \`${mode}\``,
         `Job name: \`${jobName}\``,
         `Final status: \`${finalStatus}\``,
-        testRunId ? `Test run: \`${testRunId}\`` : "",
+        runUrl ? `Test run: ${runUrl}` : "",
     ].filter(Boolean))
         .write();
     if (!reachedTerminal) {
-        core.setFailed(`Timed out after ${timeoutMs / 1000}s waiting for run to terminate (last status: ${lastStatus}).`);
+        core.setFailed(`Timed out after ${timeoutMs}s waiting for run to terminate (last status: ${lastStatus}).${runUrl ? ` View: ${runUrl}` : ""}`);
         return;
     }
     if (!SUCCESS_RUN_STATUSES.has(lastStatus)) {
-        core.setFailed(`Test run terminated with status: ${lastStatus}.`);
+        core.setFailed(`Test run terminated with status: ${lastStatus}.${runUrl ? ` View: ${runUrl}` : ""}`);
         return;
     }
-    core.info(`Test run terminated with status: ${lastStatus}.`);
+    core.info(`Test run terminated with status: ${lastStatus}.${runUrl ? ` View: ${runUrl}` : ""}`);
 }
 async function fetchStatus(url, apiKey) {
     let response;
@@ -30101,6 +30104,16 @@ async function fetchStatus(url, apiKey) {
 }
 function parsePositiveIntInput(name) {
     const raw = core.getInput(name);
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`\`${name}\` must be a positive integer, got: ${raw}`);
+    }
+    return parsed;
+}
+function parseOptionalPositiveIntInput(name) {
+    const raw = core.getInput(name);
+    if (raw === "")
+        return undefined;
     const parsed = Number(raw);
     if (!Number.isInteger(parsed) || parsed <= 0) {
         throw new Error(`\`${name}\` must be a positive integer, got: ${raw}`);
