@@ -103,13 +103,14 @@ unless overridden.
 | `env-overrides` | no | — | JSON object of per-run env vars (grep mode only). |
 | `auto-heal` | no | `false` | Opt this run into auto-heal-on-failure. |
 | `auto-create-pr` | no | `true` | When auto-heal is enabled, push healed tests as a PR. |
-| `pr-number` | no | auto | Source PR number for heal progress comments. Auto-detected on `pull_request` events. |
+| `pr-number` | no | auto | Source PR number for heal progress comments. Auto-detected on `pull_request` events from the event payload, and on `push` events by looking up an open PR for the branch via the GH API (uses `github-token`, requires `permissions: pull-requests: read`). |
 | `repo-name` | no | auto | Bare repo name (no owner). Auto-detected from `github.repository`. |
 | `metadata` | no | — | JSON object of free-form metadata attached to heal sessions. |
 | `wait` | no | `false` | When `true`, poll until the run reaches a terminal status; exit code reflects the outcome (`passed`/`healed` → 0, others → 1). |
 | `poll-interval-seconds` | no | `15` | Status poll interval when `wait: true`. |
 | `wait-timeout-seconds` | no | — | Maximum time to wait for terminal status when `wait: true`. When omitted, waits indefinitely; the workflow job's `timeout-minutes` is the upper bound. |
 | `api-base-url` | no | `https://api.checksum.ai` | Override the API base URL (e.g., for staging). |
+| `github-token` | no | `${{ github.token }}` | Token used to look up the open PR for the current branch on `push` events. Needs `pull-requests: read`. Ignored on `pull_request` events. |
 
 *Provide exactly one of `grep`, `suite-ids`, `test-ids`, `collection-id`.
 

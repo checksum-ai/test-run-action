@@ -29979,7 +29979,7 @@ async function run() {
         .trim()
         .replace(/\/+$/, "");
     const plan = buildDispatchPlan(baseUrl);
-    attachAutoHealIfEnabled(plan.payload);
+    await attachAutoHealIfEnabled(plan.payload);
     core.info(`Dispatching ${plan.mode} run → POST ${plan.url}`);
     core.info(`Payload: ${JSON.stringify(redactPayload(plan.payload))}`);
     const response = await fetch(plan.url, {
@@ -30215,7 +30215,7 @@ function planCollection(baseUrl, collectionId) {
         payload: {},
     };
 }
-function attachAutoHealIfEnabled(payload) {
+async function attachAutoHealIfEnabled(payload) {
     if (!core.getBooleanInput("auto-heal"))
         return;
     const autoHeal = {};
@@ -30223,7 +30223,7 @@ function attachAutoHealIfEnabled(payload) {
     const repoName = resolveRepoName();
     if (repoName)
         autoHeal.repoName = repoName;
-    const prNumber = resolvePrNumber();
+    const prNumber = await resolvePrNumber();
     if (prNumber !== undefined)
         autoHeal.prNumber = prNumber;
     const metadataRaw = core.getInput("metadata");
@@ -30252,7 +30252,7 @@ function resolveRepoName() {
     const parts = ghRepo.split("/");
     return parts[parts.length - 1] || undefined;
 }
-function resolvePrNumber() {
+async function resolvePrNumber() {
     const explicit = core.getInput("pr-number");
     if (explicit) {
         const parsed = Number(explicit);
@@ -30261,8 +30261,60 @@ function resolvePrNumber() {
         }
         return parsed;
     }
+    // pull_request / pull_request_target events carry the PR number in the
+    // event payload — no API call needed.
     const fromEvent = github.context.payload?.pull_request?.number;
-    return typeof fromEvent === "number" ? fromEvent : undefined;
+    if (typeof fromEvent === "number")
+        return fromEvent;
+    // push / workflow_dispatch / schedule events don't carry PR data, so look
+    // up an open PR with this branch as head via the GH API. Requires
+    // `pull-requests: read` permission on the workflow's GITHUB_TOKEN.
+    return await lookupPrNumberByBranch();
+}
+async function lookupPrNumberByBranch() {
+    const token = core.getInput("github-token");
+    if (!token) {
+        core.info("pr-number: no github-token provided; cannot look up PR for branch.");
+        return undefined;
+    }
+    const ref = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF || "";
+    const branch = ref.replace(/^refs\/heads\//, "");
+    const repository = process.env.GITHUB_REPOSITORY || "";
+    const [owner, repo] = repository.split("/");
+    if (!branch || !owner || !repo) {
+        core.info(`pr-number: cannot derive branch+repo (branch=${branch}, repository=${repository}); skipping lookup.`);
+        return undefined;
+    }
+    try {
+        const octokit = github.getOctokit(token);
+        const { data: prs } = await octokit.rest.pulls.list({
+            owner,
+            repo,
+            head: `${owner}:${branch}`,
+            state: "open",
+            per_page: 2,
+        });
+        if (prs.length === 0) {
+            core.info(`pr-number: no open PR found with head ${owner}:${branch}.`);
+            return undefined;
+        }
+        if (prs.length > 1) {
+            core.warning(`pr-number: multiple open PRs found with head ${owner}:${branch}; using #${prs[0].number}.`);
+        }
+        core.info(`pr-number: auto-resolved to #${prs[0].number} from open PR.`);
+        return prs[0].number;
+    }
+    catch (err) {
+        const status = err?.status;
+        if (status === 401 || status === 403) {
+            core.warning("pr-number: GH API returned 403/401 looking up the PR. Add `permissions: pull-requests: read` to the workflow (or pass `pr-number:` explicitly).");
+        }
+        else {
+            const message = err instanceof Error ? err.message : String(err);
+            core.warning(`pr-number: PR lookup failed: ${message}`);
+        }
+        return undefined;
+    }
 }
 function parseCsv(raw) {
     return raw

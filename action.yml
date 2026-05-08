@@ -74,6 +74,10 @@ inputs:
     description: 'Checksum AI API base URL.'
     required: false
     default: 'https://api.checksum.ai'
+  github-token:
+    description: 'Token used to look up the open PR for the current branch when running on a `push` event (so `pr-number` can be auto-resolved). Defaults to the workflow''s GITHUB_TOKEN. Needs `pull-requests: read` permission. Ignored on `pull_request` events (the PR number is read from the event payload).'
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   job-name:
