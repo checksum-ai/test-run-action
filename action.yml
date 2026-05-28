@@ -11,7 +11,20 @@ inputs:
     description: 'Checksum AI API key. Pass via a secret (see README for an example).'
     required: true
 
-  # Execution mode — set exactly one of the following.
+  # Execution mode — set exactly one of the following (or `affected`).
+  affected:
+    description: 'Resolve affected tests via POST /public-api/v1/affected-tests, then dispatch grep execution with the returned test ids. Requires `changed-files` or `git-base-ref`.'
+    required: false
+    default: 'false'
+  changed-files:
+    description: 'Changed source paths (one per line) for `affected` mode. Ignored when `git-base-ref` computes the diff.'
+    required: false
+  git-base-ref:
+    description: 'Git ref to diff against (e.g. origin/main) when `affected` is true. Requires a prior checkout with fetch-depth: 0.'
+    required: false
+  git-dir:
+    description: 'Optional path passed as `git -C` when computing the diff (dual-repo CI: monorepo checkout while the workflow runs elsewhere).'
+    required: false
   grep:
     description: 'Substring or regex pattern matched against test names.'
     required: false
@@ -80,6 +93,10 @@ inputs:
     default: ${{ github.token }}
 
 outputs:
+  affected-test-ids:
+    description: 'JSON array of Checksum test ids from /affected-tests when `affected` is true. Empty when nothing was affected.'
+  grep-pattern:
+    description: 'Grep pattern derived from affected test ids and sent to /execution/grep. Set only when `affected` found tests to run.'
   job-name:
     description: 'Name of the dispatched test-run job, returned by the execution endpoint. Use it to query status via /public-api/v2/execution/status/{jobName}.'
   status:

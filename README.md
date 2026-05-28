@@ -22,15 +22,64 @@ is needed for auto-heal.
 
 ## Execution modes
 
-Set exactly one of `grep`, `suite-ids`, `test-ids`, or `collection-id`. The
-action picks the matching public-API endpoint:
+Set exactly one of `affected`, `grep`, `suite-ids`, `test-ids`, or
+`collection-id`. The action picks the matching public-API endpoint:
 
 | Input | Endpoint |
 | --- | --- |
+| `affected` | `POST /public-api/v1/affected-tests` → `POST /public-api/v2/execution/grep` |
 | `grep` | `POST /public-api/v2/execution/grep` |
 | `suite-ids` | `POST /public-api/v1/execution/suite` |
 | `test-ids` | `POST /public-api/v1/execution/tests` |
 | `collection-id` | `POST /public-api/v1/execution/collection/:id` |
+
+### Affected tests (API)
+
+`affected: true` calls `/public-api/v1/affected-tests` with your changed
+files, builds a grep pattern from the returned test ids (same as
+`npx checksumai test --cksm-affected`), then dispatches
+`/public-api/v2/execution/grep`. Supports `branch`, `env-overrides`, and
+`auto-heal` like grep mode.
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+
+- uses: checksum-ai/test-run-action@v1
+  with:
+    api-key: ${{ secrets.CHECKSUM_API_KEY }}
+    affected: true
+    git-base-ref: origin/${{ github.base_ref }}
+    auto-heal: true
+    env-overrides: |
+      {"BASE_URL": "https://preview.checksum.ai/pr-${{ github.event.pull_request.number }}/"}
+```
+
+Or pass paths explicitly (no git diff on the runner):
+
+```yaml
+- uses: checksum-ai/test-run-action@v1
+  with:
+    api-key: ${{ secrets.CHECKSUM_API_KEY }}
+    affected: true
+    changed-files: |
+      packages/webapp/src/routing/index.ts
+```
+
+Dual-repo CI (diff the code repo, dispatch from the workflow repo):
+
+```yaml
+- uses: checksum-ai/test-run-action@v1
+  with:
+    api-key: ${{ secrets.CHECKSUM_API_KEY }}
+    affected: true
+    git-base-ref: origin/main
+    git-dir: ${{ github.workspace }}/code
+```
+
+When no tests are affected, the step exits successfully without dispatching a
+run (same as the CLI dry-run / empty-affected behavior).
 
 ```yaml
 # Grep — pattern match on test names. Supports `branch` and `env-overrides`.
@@ -95,6 +144,10 @@ unless overridden.
 | Name | Required | Default | Description |
 | --- | --- | --- | --- |
 | `api-key` | yes | — | Checksum AI API key. |
+| `affected` | no* | `false` | Resolve affected tests via API, then grep-dispatch those ids. |
+| `changed-files` | no | — | Newline-separated changed paths (`affected` mode). |
+| `git-base-ref` | no | — | Ref to diff against (`affected` mode; needs checkout + `fetch-depth: 0`). |
+| `git-dir` | no | — | `git -C` directory for the diff (`affected` mode). |
 | `grep` | no* | — | Substring/regex matched against test names. |
 | `suite-ids` | no* | — | Comma-separated suite UUIDs. |
 | `test-ids` | no* | — | Comma-separated test UUIDs. |
@@ -112,12 +165,14 @@ unless overridden.
 | `api-base-url` | no | `https://api.checksum.ai` | Override the API base URL (e.g., for staging). |
 | `github-token` | no | `${{ github.token }}` | Token used to look up the open PR for the current branch on `push` events. Needs `pull-requests: read`. Ignored on `pull_request` events. |
 
-*Provide exactly one of `grep`, `suite-ids`, `test-ids`, `collection-id`.
+*Provide exactly one of `affected`, `grep`, `suite-ids`, `test-ids`, `collection-id`.
 
 ## Outputs
 
 | Name | Description |
 | --- | --- |
+| `affected-test-ids` | JSON array from `/affected-tests` when `affected: true`. |
+| `grep-pattern` | Grep pattern sent to execution (affected mode, when tests were found). |
 | `job-name` | Name of the dispatched job. Use it to query `/public-api/v2/execution/status/{jobName}` if you want to poll yourself. |
 | `status` | Final terminal status when `wait: true`: `passed`, `healed`, `failed`, `process-error`, `cancelled`, or `timeout`. Empty when `wait: false`. |
 | `test-run-id` | Test run UUID, populated when `wait: true` and the run reached a terminal status. |
