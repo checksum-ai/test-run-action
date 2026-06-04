@@ -87,7 +87,13 @@ export async function fetchAffectedTestIds(
   return ids;
 }
 
-export function resolveChangedFiles(): string[] {
+/**
+ * Resolve changed files from the explicit `changed-files` input, or from a
+ * local `git diff` against `git-base-ref`. Returns `null` when neither is
+ * provided so the caller can fall back to reading the PR's files from the
+ * GitHub API (the no-checkout path).
+ */
+export function resolveChangedFiles(): string[] | null {
   const explicit = core.getMultilineInput("changed-files", { required: false });
   const fromExplicit = explicit
     .map((line) => line.trim())
@@ -105,10 +111,8 @@ export function resolveChangedFiles(): string[] {
 
   const baseRef = core.getInput("git-base-ref").trim();
   if (!baseRef) {
-    throw new Error(
-      "With `affected: true`, provide `changed-files:` (newline-separated paths) " +
-        "or `git-base-ref:` (e.g. origin/main) after checking out the code repo with fetch-depth: 0."
-    );
+    // Neither input provided — caller falls back to the PR's files via the API.
+    return null;
   }
 
   return getChangedFilesFromGit(baseRef, core.getInput("git-dir").trim() || undefined);

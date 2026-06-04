@@ -41,6 +41,31 @@ files, builds a grep pattern from the returned test ids (same as
 `/public-api/v2/execution/grep`. Supports `branch`, `env-overrides`, and
 `auto-heal` like grep mode.
 
+**No checkout needed.** On a `pull_request` event, omit `changed-files` and
+`git-base-ref` — the action reads the PR's changed files from the GitHub API
+and runs only the affected tests on the Checksum cloud. Point them at a preview
+deployment with `env-overrides`:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: read   # so the action can read the PR's changed files
+
+steps:
+  - uses: checksum-ai/test-run-action@v1
+    with:
+      api-key: ${{ secrets.CHECKSUM_API_KEY }}
+      affected: true
+      wait: true
+      env-overrides: |
+        {"BASE_URL": "https://preview.checksum.ai/pr-${{ github.event.pull_request.number }}/"}
+```
+
+(Outside a `pull_request` event — e.g. `workflow_run` — pass `pr-number:` so the
+action knows which PR's files to read.)
+
+Or compute the diff locally from a checkout:
+
 ```yaml
 - uses: actions/checkout@v4
   with:

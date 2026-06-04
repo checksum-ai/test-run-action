@@ -30027,6 +30027,12 @@ async function fetchAffectedTestIds(baseUrl, apiKey, changedFiles) {
     }
     return ids;
 }
+/**
+ * Resolve changed files from the explicit `changed-files` input, or from a
+ * local `git diff` against `git-base-ref`. Returns `null` when neither is
+ * provided so the caller can fall back to reading the PR's files from the
+ * GitHub API (the no-checkout path).
+ */
 function resolveChangedFiles() {
     const explicit = core.getMultilineInput("changed-files", { required: false });
     const fromExplicit = explicit
@@ -30041,8 +30047,8 @@ function resolveChangedFiles() {
     }
     const baseRef = core.getInput("git-base-ref").trim();
     if (!baseRef) {
-        throw new Error("With `affected: true`, provide `changed-files:` (newline-separated paths) " +
-            "or `git-base-ref:` (e.g. origin/main) after checking out the code repo with fetch-depth: 0.");
+        // Neither input provided — caller falls back to the PR's files via the API.
+        return null;
     }
     return getChangedFilesFromGit(baseRef, core.getInput("git-dir").trim() || undefined);
 }
@@ -30335,7 +30341,7 @@ async function buildDispatchPlan(baseUrl, apiKey) {
     return planCollection(baseUrl, collectionId);
 }
 async function planAffected(baseUrl, apiKey) {
-    const changedFiles = (0, affected_1.resolveChangedFiles)();
+    const changedFiles = await resolveAffectedChangedFiles();
     core.info(`Resolving affected tests for ${changedFiles.length} changed file(s)…`);
     const affectedTestIds = await (0, affected_1.fetchAffectedTestIds)(baseUrl, apiKey, changedFiles);
     core.setOutput("affected-test-ids", JSON.stringify(affectedTestIds));
@@ -30357,6 +30363,49 @@ async function planAffected(baseUrl, apiKey) {
     core.info(`Dispatching grep run with pattern: ${grepPattern}`);
     const plan = planGrep(baseUrl, grepPattern);
     return { ...plan, mode: "affected" };
+}
+/**
+ * Resolve the changed-file list for `affected` mode. Precedence:
+ *   1. `changed-files` input (explicit), or a local `git diff` vs
+ *      `git-base-ref` — handled by resolveChangedFiles().
+ *   2. Otherwise (no checkout): read the open PR's files from the GitHub API.
+ */
+async function resolveAffectedChangedFiles() {
+    const fromInputsOrGit = (0, affected_1.resolveChangedFiles)();
+    if (fromInputsOrGit !== null)
+        return fromInputsOrGit;
+    const prNumber = await resolvePrNumber();
+    if (prNumber === undefined) {
+        throw new Error("`affected: true` needs changed files. Provide `changed-files:` or " +
+            "`git-base-ref:`, or run on a pull_request event (or pass `pr-number:`) " +
+            "so the changed files can be read from the GitHub API.");
+    }
+    return await fetchPrChangedFiles(prNumber);
+}
+/** List a PR's changed file paths via the GitHub API (no checkout needed). */
+async function fetchPrChangedFiles(prNumber) {
+    const token = core.getInput("github-token");
+    if (!token) {
+        throw new Error("`affected: true` (no checkout) needs `github-token` with " +
+            "`pull-requests: read` to read the PR's changed files.");
+    }
+    const repository = process.env.GITHUB_REPOSITORY || "";
+    const [owner, repo] = repository.split("/");
+    if (!owner || !repo) {
+        throw new Error(`Cannot derive owner/repo from GITHUB_REPOSITORY ("${repository}").`);
+    }
+    const octokit = github.getOctokit(token);
+    const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100,
+    });
+    const changed = files
+        .map((f) => f.filename)
+        .filter((name) => typeof name === "string" && name.length > 0);
+    core.info(`Read ${changed.length} changed file(s) from PR #${prNumber} via the GitHub API.`);
+    return changed;
 }
 function warnOnIgnoredInputs(mode) {
     if (mode === "grep" || mode === "affected")

@@ -13,14 +13,14 @@ inputs:
 
   # Execution mode — set exactly one of the following (or `affected`).
   affected:
-    description: 'Resolve affected tests via POST /public-api/v1/affected-tests, then dispatch grep execution with the returned test ids. Requires `changed-files` or `git-base-ref`.'
+    description: 'Resolve affected tests via POST /public-api/v1/affected-tests, then dispatch grep execution with the returned test ids. Changed files come from `changed-files`, or a `git-base-ref` diff, or — when neither is set — the PR''s files read from the GitHub API (no checkout needed; pair with `env-overrides` to target a preview).'
     required: false
     default: 'false'
   changed-files:
     description: 'Changed source paths (one per line) for `affected` mode. Ignored when `git-base-ref` computes the diff.'
     required: false
   git-base-ref:
-    description: 'Git ref to diff against (e.g. origin/main) when `affected` is true. Requires a prior checkout with fetch-depth: 0.'
+    description: 'Git ref to diff against (e.g. origin/main) when `affected` is true. Requires a prior checkout with fetch-depth: 0. Omit (with no `changed-files`) to auto-read the PR''s files from the GitHub API instead.'
     required: false
   git-dir:
     description: 'Optional path passed as `git -C` when computing the diff (dual-repo CI: monorepo checkout while the workflow runs elsewhere).'
