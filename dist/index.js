@@ -29922,6 +29922,177 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
+/***/ 5091:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildGrepPatternFromAffectedIds = buildGrepPatternFromAffectedIds;
+exports.fetchAffectedTestIds = fetchAffectedTestIds;
+exports.resolveChangedFiles = resolveChangedFiles;
+const core = __importStar(__nccwpck_require__(7484));
+const node_child_process_1 = __nccwpck_require__(1421);
+const AFFECTED_TIMEOUT_MS = 300_000;
+const MAX_CHANGED_FILES = 1000;
+const SAFE_REF = /^[A-Za-z0-9._/~^@-]+$/;
+const SAFE_GIT_DIR = /^[A-Za-z0-9._/\-]+$/;
+/** Same pattern as `checksumai test --cksm-affected` (runtime tests-runner). */
+function buildGrepPatternFromAffectedIds(testIds) {
+    const grepIds = [...testIds]
+        .sort()
+        .map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return `(${grepIds.join("|")})`;
+}
+async function fetchAffectedTestIds(baseUrl, apiKey, changedFiles) {
+    if (changedFiles.length === 0) {
+        throw new Error("changed-files is empty. Pass `changed-files:` or `git-base-ref:` when `affected: true`.");
+    }
+    if (changedFiles.length > MAX_CHANGED_FILES) {
+        throw new Error(`changed-files exceeds ${MAX_CHANGED_FILES} entries; use a closer git-base-ref or narrow the diff.`);
+    }
+    const url = `${baseUrl.replace(/\/+$/, "")}/public-api/v1/affected-tests`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AFFECTED_TIMEOUT_MS);
+    let response;
+    try {
+        response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                accept: "application/json",
+                ChecksumAppCode: apiKey,
+            },
+            body: JSON.stringify({ changedFiles }),
+            signal: controller.signal,
+        });
+    }
+    catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+            throw new Error(`Affected-tests request timed out after ${AFFECTED_TIMEOUT_MS / 1000}s. ` +
+                "Narrow the diff (closer git-base-ref) or run the full suite with `grep:`.");
+        }
+        throw err;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+    const bodyText = await response.text();
+    if (!response.ok) {
+        throw new Error(`Affected-tests request failed (HTTP ${response.status}). Body: ${bodyText}`);
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(bodyText);
+    }
+    catch {
+        throw new Error(`Affected-tests returned HTTP ${response.status} but body was not valid JSON: ${bodyText}`);
+    }
+    const ids = parsed.affectedTestIds;
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && id.length > 0)) {
+        throw new Error(`Affected-tests response missing a valid "affectedTestIds" array: ${bodyText}`);
+    }
+    return ids;
+}
+/**
+ * Resolve changed files from the explicit `changed-files` input, or from a
+ * local `git diff` against `git-base-ref`. Returns `null` when neither is
+ * provided so the caller can fall back to reading the PR's files from the
+ * GitHub API (the no-checkout path).
+ */
+function resolveChangedFiles() {
+    const explicit = core.getMultilineInput("changed-files", { required: false });
+    const fromExplicit = explicit
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    if (fromExplicit.length > 0) {
+        const baseRef = core.getInput("git-base-ref").trim();
+        if (baseRef) {
+            core.warning("`git-base-ref` is ignored when `changed-files` is provided.");
+        }
+        return fromExplicit;
+    }
+    const baseRef = core.getInput("git-base-ref").trim();
+    if (!baseRef) {
+        // Neither input provided — caller falls back to the PR's files via the API.
+        return null;
+    }
+    return getChangedFilesFromGit(baseRef, core.getInput("git-dir").trim() || undefined);
+}
+function getChangedFilesFromGit(baseRef, gitDir) {
+    assertSafeRef(baseRef);
+    const git = (cmd) => {
+        const full = gitDir ? wrapGitCommand(cmd, gitDir) : cmd;
+        return (0, node_child_process_1.execSync)(full, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    };
+    let mergeBase;
+    try {
+        mergeBase = git(`git merge-base HEAD ${baseRef}`);
+    }
+    catch {
+        throw new Error(`Could not resolve merge-base for git-base-ref "${baseRef}". ` +
+            "Fetch the base branch (git fetch origin <base>) and ensure fetch-depth: 0.");
+    }
+    if (!mergeBase) {
+        throw new Error(`Unexpected empty merge-base for git-base-ref "${baseRef}".`);
+    }
+    const diff = git(`git diff --name-only ${mergeBase}..HEAD`);
+    return diff
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+}
+function wrapGitCommand(cmd, gitDir) {
+    if (!cmd.startsWith("git ")) {
+        throw new Error(`Expected git command, got: ${cmd}`);
+    }
+    if (!SAFE_GIT_DIR.test(gitDir)) {
+        throw new Error(`Unsafe git-dir: "${gitDir}". Only letters, digits and . _ / - are allowed.`);
+    }
+    return `git -C "${gitDir}" ${cmd.slice(4)}`;
+}
+function assertSafeRef(ref) {
+    if (!SAFE_REF.test(ref)) {
+        throw new Error(`Unsafe git-base-ref: "${ref}". Only letters, digits and . _ / - ~ ^ @ are allowed.`);
+    }
+}
+
+
+/***/ }),
+
 /***/ 9407:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -29963,6 +30134,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
+const affected_1 = __nccwpck_require__(5091);
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
 const TERMINAL_RUN_STATUSES = new Set([
     "passed",
@@ -29978,7 +30150,10 @@ async function run() {
         .getInput("api-base-url")
         .trim()
         .replace(/\/+$/, "");
-    const plan = buildDispatchPlan(baseUrl);
+    const plan = await buildDispatchPlan(baseUrl, apiKey);
+    if (plan === null) {
+        return;
+    }
     await attachAutoHealIfEnabled(plan.payload);
     core.info(`Dispatching ${plan.mode} run → POST ${plan.url}`);
     core.info(`Payload: ${JSON.stringify(redactPayload(plan.payload))}`);
@@ -30125,11 +30300,12 @@ function sleep(ms) {
         setTimeout(resolve, ms);
     });
 }
-function buildDispatchPlan(baseUrl) {
+async function buildDispatchPlan(baseUrl, apiKey) {
     // GitHub Actions sets INPUT_* env vars for every input declared in
     // action.yml regardless of whether the caller set them, so we cannot
     // distinguish "set to empty string" from "not set". Mode auto-detection
     // therefore requires a non-empty value on exactly one mode input.
+    const affected = core.getBooleanInput("affected");
     const grep = core.getInput("grep");
     const suiteIds = core.getInput("suite-ids");
     const testIds = core.getInput("test-ids");
@@ -30140,13 +30316,19 @@ function buildDispatchPlan(baseUrl) {
         ["test-ids", testIds],
         ["collection-id", collectionId],
     ].filter(([, value]) => value !== "");
+    if (affected && provided.length > 0) {
+        throw new Error("`affected: true` cannot be combined with `grep`, `suite-ids`, `test-ids`, or `collection-id`.");
+    }
+    if (affected) {
+        return planAffected(baseUrl, apiKey);
+    }
     if (provided.length > 1) {
         throw new Error(`Provide exactly one execution mode input. Got: ${provided
             .map(([k]) => k)
             .join(", ")}.`);
     }
     if (provided.length === 0) {
-        throw new Error("Provide one of: `grep`, `suite-ids`, `test-ids`, or `collection-id`.");
+        throw new Error("Provide one of: `affected`, `grep`, `suite-ids`, `test-ids`, or `collection-id`.");
     }
     const mode = provided[0][0];
     warnOnIgnoredInputs(mode);
@@ -30158,8 +30340,75 @@ function buildDispatchPlan(baseUrl) {
         return planTests(baseUrl, testIds);
     return planCollection(baseUrl, collectionId);
 }
+async function planAffected(baseUrl, apiKey) {
+    const changedFiles = await resolveAffectedChangedFiles();
+    core.info(`Resolving affected tests for ${changedFiles.length} changed file(s)…`);
+    const affectedTestIds = await (0, affected_1.fetchAffectedTestIds)(baseUrl, apiKey, changedFiles);
+    core.setOutput("affected-test-ids", JSON.stringify(affectedTestIds));
+    if (affectedTestIds.length === 0) {
+        core.info("No tests affected by the current changes — nothing to run.");
+        await core.summary
+            .addHeading("Checksum AI affected tests", 3)
+            .addList([
+            `Changed files: ${changedFiles.length}`,
+            "Affected test ids: 0",
+            "Skipped test dispatch.",
+        ])
+            .write();
+        return null;
+    }
+    const grepPattern = (0, affected_1.buildGrepPatternFromAffectedIds)(affectedTestIds);
+    core.setOutput("grep-pattern", grepPattern);
+    core.info(`Affected test ids (${affectedTestIds.length}): ${affectedTestIds.join(", ")}`);
+    core.info(`Dispatching grep run with pattern: ${grepPattern}`);
+    const plan = planGrep(baseUrl, grepPattern);
+    return { ...plan, mode: "affected" };
+}
+/**
+ * Resolve the changed-file list for `affected` mode. Precedence:
+ *   1. `changed-files` input (explicit), or a local `git diff` vs
+ *      `git-base-ref` — handled by resolveChangedFiles().
+ *   2. Otherwise (no checkout): read the open PR's files from the GitHub API.
+ */
+async function resolveAffectedChangedFiles() {
+    const fromInputsOrGit = (0, affected_1.resolveChangedFiles)();
+    if (fromInputsOrGit !== null)
+        return fromInputsOrGit;
+    const prNumber = await resolvePrNumber();
+    if (prNumber === undefined) {
+        throw new Error("`affected: true` needs changed files. Provide `changed-files:` or " +
+            "`git-base-ref:`, or run on a pull_request event (or pass `pr-number:`) " +
+            "so the changed files can be read from the GitHub API.");
+    }
+    return await fetchPrChangedFiles(prNumber);
+}
+/** List a PR's changed file paths via the GitHub API (no checkout needed). */
+async function fetchPrChangedFiles(prNumber) {
+    const token = core.getInput("github-token");
+    if (!token) {
+        throw new Error("`affected: true` (no checkout) needs `github-token` with " +
+            "`pull-requests: read` to read the PR's changed files.");
+    }
+    const repository = process.env.GITHUB_REPOSITORY || "";
+    const [owner, repo] = repository.split("/");
+    if (!owner || !repo) {
+        throw new Error(`Cannot derive owner/repo from GITHUB_REPOSITORY ("${repository}").`);
+    }
+    const octokit = github.getOctokit(token);
+    const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100,
+    });
+    const changed = files
+        .map((f) => f.filename)
+        .filter((name) => typeof name === "string" && name.length > 0);
+    core.info(`Read ${changed.length} changed file(s) from PR #${prNumber} via the GitHub API.`);
+    return changed;
+}
 function warnOnIgnoredInputs(mode) {
-    if (mode === "grep")
+    if (mode === "grep" || mode === "affected")
         return;
     const ignored = [];
     if (core.getInput("branch"))
@@ -30451,6 +30700,14 @@ module.exports = require("https");
 
 "use strict";
 module.exports = require("net");
+
+/***/ }),
+
+/***/ 1421:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:child_process");
 
 /***/ }),
 

@@ -1,7 +1,12 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import {
+  buildGrepPatternFromAffectedIds,
+  fetchAffectedTestIds,
+  resolveChangedFiles,
+} from "./affected";
 
-type ExecMode = "grep" | "suite" | "tests" | "collection";
+type ExecMode = "grep" | "suite" | "tests" | "collection" | "affected";
 
 type AutoHealBlock = {
   autoCreatePR?: boolean;
@@ -38,7 +43,10 @@ async function run(): Promise<void> {
     .trim()
     .replace(/\/+$/, "");
 
-  const plan = buildDispatchPlan(baseUrl);
+  const plan = await buildDispatchPlan(baseUrl, apiKey);
+  if (plan === null) {
+    return;
+  }
   await attachAutoHealIfEnabled(plan.payload);
 
   core.info(`Dispatching ${plan.mode} run → POST ${plan.url}`);
@@ -229,11 +237,15 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function buildDispatchPlan(baseUrl: string): DispatchPlan {
+async function buildDispatchPlan(
+  baseUrl: string,
+  apiKey: string
+): Promise<DispatchPlan | null> {
   // GitHub Actions sets INPUT_* env vars for every input declared in
   // action.yml regardless of whether the caller set them, so we cannot
   // distinguish "set to empty string" from "not set". Mode auto-detection
   // therefore requires a non-empty value on exactly one mode input.
+  const affected = core.getBooleanInput("affected");
   const grep = core.getInput("grep");
   const suiteIds = core.getInput("suite-ids");
   const testIds = core.getInput("test-ids");
@@ -246,6 +258,15 @@ function buildDispatchPlan(baseUrl: string): DispatchPlan {
     ["collection-id", collectionId],
   ].filter(([, value]) => value !== "") as Array<[string, string]>;
 
+  if (affected && provided.length > 0) {
+    throw new Error(
+      "`affected: true` cannot be combined with `grep`, `suite-ids`, `test-ids`, or `collection-id`."
+    );
+  }
+  if (affected) {
+    return planAffected(baseUrl, apiKey);
+  }
+
   if (provided.length > 1) {
     throw new Error(
       `Provide exactly one execution mode input. Got: ${provided
@@ -255,7 +276,7 @@ function buildDispatchPlan(baseUrl: string): DispatchPlan {
   }
   if (provided.length === 0) {
     throw new Error(
-      "Provide one of: `grep`, `suite-ids`, `test-ids`, or `collection-id`."
+      "Provide one of: `affected`, `grep`, `suite-ids`, `test-ids`, or `collection-id`."
     );
   }
 
@@ -268,8 +289,102 @@ function buildDispatchPlan(baseUrl: string): DispatchPlan {
   return planCollection(baseUrl, collectionId);
 }
 
+async function planAffected(
+  baseUrl: string,
+  apiKey: string
+): Promise<DispatchPlan | null> {
+  const changedFiles = await resolveAffectedChangedFiles();
+  core.info(
+    `Resolving affected tests for ${changedFiles.length} changed file(s)…`
+  );
+
+  const affectedTestIds = await fetchAffectedTestIds(
+    baseUrl,
+    apiKey,
+    changedFiles
+  );
+  core.setOutput("affected-test-ids", JSON.stringify(affectedTestIds));
+
+  if (affectedTestIds.length === 0) {
+    core.info("No tests affected by the current changes — nothing to run.");
+    await core.summary
+      .addHeading("Checksum AI affected tests", 3)
+      .addList([
+        `Changed files: ${changedFiles.length}`,
+        "Affected test ids: 0",
+        "Skipped test dispatch.",
+      ])
+      .write();
+    return null;
+  }
+
+  const grepPattern = buildGrepPatternFromAffectedIds(affectedTestIds);
+  core.setOutput("grep-pattern", grepPattern);
+  core.info(
+    `Affected test ids (${affectedTestIds.length}): ${affectedTestIds.join(", ")}`
+  );
+  core.info(`Dispatching grep run with pattern: ${grepPattern}`);
+
+  const plan = planGrep(baseUrl, grepPattern);
+  return { ...plan, mode: "affected" };
+}
+
+/**
+ * Resolve the changed-file list for `affected` mode. Precedence:
+ *   1. `changed-files` input (explicit), or a local `git diff` vs
+ *      `git-base-ref` — handled by resolveChangedFiles().
+ *   2. Otherwise (no checkout): read the open PR's files from the GitHub API.
+ */
+async function resolveAffectedChangedFiles(): Promise<string[]> {
+  const fromInputsOrGit = resolveChangedFiles();
+  if (fromInputsOrGit !== null) return fromInputsOrGit;
+
+  const prNumber = await resolvePrNumber();
+  if (prNumber === undefined) {
+    throw new Error(
+      "`affected: true` needs changed files. Provide `changed-files:` or " +
+        "`git-base-ref:`, or run on a pull_request event (or pass `pr-number:`) " +
+        "so the changed files can be read from the GitHub API."
+    );
+  }
+  return await fetchPrChangedFiles(prNumber);
+}
+
+/** List a PR's changed file paths via the GitHub API (no checkout needed). */
+async function fetchPrChangedFiles(prNumber: number): Promise<string[]> {
+  const token = core.getInput("github-token");
+  if (!token) {
+    throw new Error(
+      "`affected: true` (no checkout) needs `github-token` with " +
+        "`pull-requests: read` to read the PR's changed files."
+    );
+  }
+  const repository = process.env.GITHUB_REPOSITORY || "";
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) {
+    throw new Error(
+      `Cannot derive owner/repo from GITHUB_REPOSITORY ("${repository}").`
+    );
+  }
+
+  const octokit = github.getOctokit(token);
+  const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
+    owner,
+    repo,
+    pull_number: prNumber,
+    per_page: 100,
+  });
+  const changed = files
+    .map((f) => f.filename)
+    .filter((name): name is string => typeof name === "string" && name.length > 0);
+  core.info(
+    `Read ${changed.length} changed file(s) from PR #${prNumber} via the GitHub API.`
+  );
+  return changed;
+}
+
 function warnOnIgnoredInputs(mode: string): void {
-  if (mode === "grep") return;
+  if (mode === "grep" || mode === "affected") return;
   const ignored: string[] = [];
   if (core.getInput("branch")) ignored.push("`branch`");
   if (core.getInput("env-overrides")) ignored.push("`env-overrides`");
