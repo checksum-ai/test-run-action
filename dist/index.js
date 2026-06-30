@@ -30135,6 +30135,10 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const affected_1 = __nccwpck_require__(5091);
+const SHARD_COUNT_MIN = 1;
+const SHARD_COUNT_MAX = 20;
+const WORKERS_MIN = 1;
+const WORKERS_MAX = 8;
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
 const TERMINAL_RUN_STATUSES = new Set([
     "passed",
@@ -30155,6 +30159,7 @@ async function run() {
         return;
     }
     await attachAutoHealIfEnabled(plan.payload);
+    const shardCount = attachShardingIfEnabled(plan.payload);
     core.info(`Dispatching ${plan.mode} run → POST ${plan.url}`);
     core.info(`Payload: ${JSON.stringify(redactPayload(plan.payload))}`);
     const response = await fetch(plan.url, {
@@ -30178,25 +30183,50 @@ async function run() {
         core.setFailed(`Execution dispatch returned HTTP ${response.status} but body was not valid JSON: ${bodyText}`);
         return;
     }
-    const jobName = parsed.name;
-    if (!jobName) {
+    // A sharded run (shard-count >= 2) returns a null `name` and is identified
+    // solely by `runId`. A single-pod run returns a `name` (K8s job name);
+    // older API versions return only `{ name }` with no `runId`.
+    const runId = typeof parsed.runId === "string" ? parsed.runId : undefined;
+    const jobName = typeof parsed.name === "string" && parsed.name.length > 0
+        ? parsed.name
+        : undefined;
+    const sharded = parsed.sharded === true || (shardCount >= 2 && !jobName);
+    if (sharded && !runId) {
+        core.setFailed(`Sharded dispatch returned HTTP ${response.status} but response had no "runId" field: ${bodyText}`);
+        return;
+    }
+    if (!sharded && !jobName) {
         core.setFailed(`Execution dispatch returned HTTP ${response.status} but response had no "name" field: ${bodyText}`);
         return;
     }
-    core.setOutput("job-name", jobName);
-    core.info(`Dispatched. Job name: ${jobName}`);
+    if (jobName) {
+        core.setOutput("job-name", jobName);
+    }
+    if (runId) {
+        core.setOutput("run-id", runId);
+    }
+    core.info(sharded
+        ? `Dispatched sharded run (${shardCount} shards). Run id: ${runId}`
+        : `Dispatched. Job name: ${jobName}`);
     if (!core.getBooleanInput("wait")) {
         await core.summary
             .addHeading("Checksum AI test run dispatched", 3)
             .addList([
             `Mode: \`${plan.mode}\``,
-            `Job name: \`${jobName}\``,
+            sharded
+                ? `Run id: \`${runId}\` (sharded ×${shardCount})`
+                : `Job name: \`${jobName}\``,
             `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
-        ])
+        ].filter(Boolean))
             .write();
         return;
     }
-    await waitForCompletion(baseUrl, apiKey, jobName, plan.mode);
+    if (sharded) {
+        await waitForShardedCompletion(baseUrl, apiKey, runId, plan.mode);
+    }
+    else {
+        await waitForCompletion(baseUrl, apiKey, jobName, plan.mode);
+    }
 }
 async function waitForCompletion(baseUrl, apiKey, jobName, mode) {
     const pollIntervalMs = parsePositiveIntInput("poll-interval-seconds") * 1000;
@@ -30271,6 +30301,96 @@ async function fetchStatus(url, apiKey) {
         return {
             status: body.status,
             testRunId: typeof body.testRunId === "string" ? body.testRunId : undefined,
+        };
+    }
+    catch {
+        return null;
+    }
+}
+async function waitForShardedCompletion(baseUrl, apiKey, runId, mode) {
+    const pollIntervalMs = parsePositiveIntInput("poll-interval-seconds") * 1000;
+    const timeoutMs = parseOptionalPositiveIntInput("wait-timeout-seconds");
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs * 1000;
+    const statusUrl = `${baseUrl}/public-api/v1/execution/status/run/${encodeURIComponent(runId)}`;
+    core.info(`Waiting for sharded run to terminate (poll every ${pollIntervalMs / 1000}s, timeout ${deadline === undefined ? "none" : `${timeoutMs}s`})…`);
+    let terminal = false;
+    let verdict = "pending";
+    let phase = "unknown";
+    let executedCount = 0;
+    while (deadline === undefined || Date.now() < deadline) {
+        const result = await fetchRunStatus(statusUrl, apiKey);
+        if (result === null) {
+            // Transient fetch failure — keep polling; the run is still progressing.
+            core.warning("Status request failed; will retry.");
+        }
+        else {
+            verdict = result.verdict;
+            phase = result.phase;
+            executedCount = result.executedCount;
+            core.info(`phase=${phase} verdict=${verdict} executed=${executedCount}`);
+            // The server is the sole authority on completion: gate the loop on
+            // `isTerminal`, never on raw counts.
+            if (result.isTerminal) {
+                terminal = true;
+                break;
+            }
+        }
+        await sleep(pollIntervalMs);
+    }
+    const finalStatus = terminal ? phase : "timeout";
+    const finalVerdict = terminal ? verdict : "timeout";
+    const runUrl = `https://app.checksum.ai/#/test-runs/${runId}`;
+    core.setOutput("status", finalStatus);
+    core.setOutput("verdict", finalVerdict);
+    core.setOutput("test-run-id", runId);
+    await core.summary
+        .addHeading("Checksum AI sharded test run", 3)
+        .addList([
+        `Mode: \`${mode}\``,
+        `Run id: \`${runId}\``,
+        `Phase: \`${finalStatus}\``,
+        `Verdict: \`${finalVerdict}\``,
+        `Tests executed: \`${executedCount}\``,
+        `Test run: ${runUrl}`,
+    ])
+        .write();
+    if (!terminal) {
+        core.setFailed(`Timed out after ${timeoutMs}s waiting for the sharded run to terminate (last phase: ${phase}). View: ${runUrl}`);
+        return;
+    }
+    // Pass the CI check iff the server says `verdict === "pass"`. `verdict` is
+    // "fail" for an infra error AND for an empty selection (executedCount === 0).
+    if (verdict !== "pass") {
+        core.setFailed(`Sharded run terminated with verdict: ${verdict} (phase: ${phase}, executed: ${executedCount}). View: ${runUrl}`);
+        return;
+    }
+    core.info(`Sharded run passed (executed: ${executedCount}). View: ${runUrl}`);
+}
+async function fetchRunStatus(url, apiKey) {
+    let response;
+    try {
+        response = await fetch(url, {
+            headers: { ChecksumAppCode: apiKey },
+        });
+    }
+    catch {
+        return null;
+    }
+    if (!response.ok) {
+        core.warning(`Status endpoint returned HTTP ${response.status}; will retry.`);
+        return null;
+    }
+    try {
+        const body = (await response.json());
+        if (typeof body.isTerminal !== "boolean")
+            return null;
+        return {
+            isTerminal: body.isTerminal,
+            verdict: body.verdict === "pass" || body.verdict === "fail"
+                ? body.verdict
+                : "pending",
+            phase: typeof body.phase === "string" ? body.phase : "unknown",
+            executedCount: typeof body.executedCount === "number" ? body.executedCount : 0,
         };
     }
     catch {
@@ -30463,6 +30583,40 @@ function planCollection(baseUrl, collectionId) {
         url: `${baseUrl}/public-api/v1/execution/collection/${encodeURIComponent(collectionId)}`,
         payload: {},
     };
+}
+/**
+ * Attach `shardCount` / `workers` to the payload when sharding is requested.
+ * Returns the effective shard count (1 = single-pod). Sharding (>= 2) is
+ * incompatible with auto-heal — the server rejects the pair with 400, so we
+ * fail early here with a clearer message.
+ */
+function attachShardingIfEnabled(payload) {
+    const shardCount = parseBoundedIntInput("shard-count", SHARD_COUNT_MIN, SHARD_COUNT_MAX);
+    const workers = parseBoundedIntInput("workers", WORKERS_MIN, WORKERS_MAX);
+    if (workers !== undefined && (shardCount === undefined || shardCount < 2)) {
+        core.warning("`workers` is only honored when `shard-count` >= 2; ignoring it.");
+    }
+    if (shardCount === undefined || shardCount < 2) {
+        // Single-pod: omit the fields entirely for byte-for-byte legacy behavior.
+        return shardCount ?? 1;
+    }
+    if (core.getBooleanInput("auto-heal")) {
+        throw new Error("`shard-count` >= 2 is incompatible with `auto-heal`. Sharding fans an immutable selection across pods, which auto-heal (which mutates the suite mid-run) cannot honor. Omit one of them.");
+    }
+    payload.shardCount = shardCount;
+    if (workers !== undefined)
+        payload.workers = workers;
+    return shardCount;
+}
+function parseBoundedIntInput(name, min, max) {
+    const raw = core.getInput(name);
+    if (raw === "")
+        return undefined;
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+        throw new Error(`\`${name}\` must be an integer in [${min}, ${max}], got: ${raw}`);
+    }
+    return parsed;
 }
 async function attachAutoHealIfEnabled(payload) {
     if (!core.getBooleanInput("auto-heal"))
