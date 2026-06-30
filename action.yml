@@ -38,6 +38,18 @@ inputs:
     description: 'A single test collection UUID.'
     required: false
 
+  # Sharding — fan a run out across parallel pods. Additive: omit (or 1) for the
+  # existing single-pod behavior. A sharded run (shard-count >= 2) has a `null`
+  # `name`, so when `wait` is true it is polled by run id via
+  # GET /public-api/v1/execution/status/run/{runId} and gates on the
+  # server-computed verdict. Sharding is incompatible with auto-heal.
+  shard-count:
+    description: 'Number of parallel shards (1–20). 1 (or omitted) runs single-pod; 2–20 fans the selection out across that many pods and merges the reports into one run. For PR-scoped runs use `grep` (the v2 grep endpoint carries `branch` + `env-overrides`).'
+    required: false
+  workers:
+    description: 'Playwright workers per shard (1–8). Only meaningful when `shard-count` >= 2; ignored otherwise.'
+    required: false
+
   # Optional execution-time pass-throughs (grep mode only — backend constraint).
   branch:
     description: 'Branch of the TEST repository to check out for this run. Defaults to the test repo''s default branch when omitted. Only honored in grep mode.'
@@ -98,11 +110,15 @@ outputs:
   grep-pattern:
     description: 'Grep pattern derived from affected test ids and sent to /execution/grep. Set only when `affected` found tests to run.'
   job-name:
-    description: 'Name of the dispatched test-run job, returned by the execution endpoint. Use it to query status via /public-api/v2/execution/status/{jobName}.'
+    description: 'K8s job name of the dispatched run, returned by the execution endpoint for a single-pod run. Use it to query status via /public-api/v2/execution/status/{jobName}. Empty for a sharded run (poll by `run-id` instead).'
+  run-id:
+    description: 'Stable run id returned by every execution endpoint. For a sharded run this is the only poll handle (the job `name` is null); query status via /public-api/v1/execution/status/run/{runId}.'
   status:
-    description: 'Final terminal status when `wait` is true (passed / healed / failed / process-error / cancelled / timeout). Empty when `wait` is false.'
+    description: 'Final status when `wait` is true. For single-pod: passed / healed / failed / process-error / cancelled / timeout. For sharded: the run phase (complete / failed) or `timeout`. Empty when `wait` is false.'
+  verdict:
+    description: 'Server-computed pass/fail gate for a sharded run when `wait` is true: `pass` / `fail` / `timeout` (poll deadline hit) / `pending` (terminal response carried no recognized verdict — gates as non-pass). Empty for single-pod runs (use `status`).'
   test-run-id:
-    description: 'Test run UUID, populated when `wait` is true and the run reaches a terminal status.'
+    description: 'Test run UUID. For single-pod runs, populated when `wait` is true and the run reaches a terminal status. For sharded runs, set to the run id once dispatched (also on timeout) so the run is always reachable.'
 
 runs:
   using: 'node20'
