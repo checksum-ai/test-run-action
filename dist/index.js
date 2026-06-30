@@ -30139,6 +30139,8 @@ const SHARD_COUNT_MIN = 1;
 const SHARD_COUNT_MAX = 20;
 const WORKERS_MIN = 1;
 const WORKERS_MAX = 8;
+// shard-count >= this fans the run out across pods; below it runs single-pod.
+const SHARDING_MIN_SHARDS = 2;
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
 const TERMINAL_RUN_STATUSES = new Set([
     "passed",
@@ -30158,8 +30160,10 @@ async function run() {
     if (plan === null) {
         return;
     }
+    // Resolve sharding first so the sharding/auto-heal incompatibility throws a
+    // clear error before any auto-heal repo/PR resolution work runs.
+    const shardCount = resolveShardCount(plan.payload);
     await attachAutoHealIfEnabled(plan.payload);
-    const shardCount = attachShardingIfEnabled(plan.payload);
     core.info(`Dispatching ${plan.mode} run → POST ${plan.url}`);
     core.info(`Payload: ${JSON.stringify(redactPayload(plan.payload))}`);
     const response = await fetch(plan.url, {
@@ -30190,7 +30194,8 @@ async function run() {
     const jobName = typeof parsed.name === "string" && parsed.name.length > 0
         ? parsed.name
         : undefined;
-    const sharded = parsed.sharded === true || (shardCount >= 2 && !jobName);
+    const sharded = parsed.sharded === true ||
+        (shardCount >= SHARDING_MIN_SHARDS && !jobName);
     if (sharded && !runId) {
         core.setFailed(`Sharded dispatch returned HTTP ${response.status} but response had no "runId" field: ${bodyText}`);
         return;
@@ -30585,18 +30590,20 @@ function planCollection(baseUrl, collectionId) {
     };
 }
 /**
- * Attach `shardCount` / `workers` to the payload when sharding is requested.
- * Returns the effective shard count (1 = single-pod). Sharding (>= 2) is
- * incompatible with auto-heal — the server rejects the pair with 400, so we
- * fail early here with a clearer message.
+ * Resolve the requested sharding and attach `shardCount` / `workers` to the
+ * payload. Returns the effective shard count (1 = single-pod). Sharding (>= 2)
+ * is incompatible with auto-heal — the server rejects the pair with 400, so we
+ * fail early here with a clearer message. Call this BEFORE auto-heal resolution
+ * so the incompatibility error wins over any repo/PR-detection error.
  */
-function attachShardingIfEnabled(payload) {
+function resolveShardCount(payload) {
     const shardCount = parseBoundedIntInput("shard-count", SHARD_COUNT_MIN, SHARD_COUNT_MAX);
     const workers = parseBoundedIntInput("workers", WORKERS_MIN, WORKERS_MAX);
-    if (workers !== undefined && (shardCount === undefined || shardCount < 2)) {
+    if (workers !== undefined &&
+        (shardCount === undefined || shardCount < SHARDING_MIN_SHARDS)) {
         core.warning("`workers` is only honored when `shard-count` >= 2; ignoring it.");
     }
-    if (shardCount === undefined || shardCount < 2) {
+    if (shardCount === undefined || shardCount < SHARDING_MIN_SHARDS) {
         // Single-pod: omit the fields entirely for byte-for-byte legacy behavior.
         return shardCount ?? 1;
     }

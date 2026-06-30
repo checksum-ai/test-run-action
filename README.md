@@ -169,7 +169,8 @@ When `wait: true`, the action polls
 `"pass"`** — it never infers success from raw counts. `verdict` fails closed
 (`"fail"`) for an infra error and for an empty selection (0 tests executed), so a
 half-merged or empty run can never false-green. The outcome is exposed via the
-`verdict` output (`pass` / `fail` / `timeout`).
+`verdict` output (`pass` / `fail` / `timeout`, or `pending` if a terminal
+response carried no recognized verdict — which still gates as non-pass).
 
 Sharding is **incompatible with `auto-heal`** (auto-heal mutates the suite
 mid-run, which an immutable shard fan-out cannot honor); combining them fails the
@@ -221,7 +222,7 @@ unless overridden.
 | `collection-id` | no* | — | Single collection UUID. |
 | `branch` | no | — | Test-repo branch (grep mode only). Defaults to test repo's default branch. |
 | `env-overrides` | no | — | JSON object of per-run env vars (grep mode only). |
-| `shard-count` | no | `1` | Parallel shards (2–20). 1 (or omitted) runs single-pod. Incompatible with `auto-heal`. |
+| `shard-count` | no | `1` | Parallel shards. Accepts 1–20: 1 (or omitted) runs single-pod, 2–20 fans out. Incompatible with `auto-heal`. |
 | `workers` | no | — | Playwright workers per shard (1–8). Only honored when `shard-count` >= 2. |
 | `auto-heal` | no | `false` | Opt this run into auto-heal-on-failure. |
 | `auto-create-pr` | no | `true` | When auto-heal is enabled, push healed tests as a PR. |
@@ -245,8 +246,8 @@ unless overridden.
 | `job-name` | Name of the dispatched job (single-pod runs). Use it to query `/public-api/v2/execution/status/{jobName}` if you want to poll yourself. Empty for sharded runs. |
 | `run-id` | Stable run id from every execution endpoint. The only poll handle for a sharded run (job `name` is null): query `/public-api/v1/execution/status/run/{runId}`. |
 | `status` | Final status when `wait: true`. Single-pod: `passed` / `healed` / `failed` / `process-error` / `cancelled` / `timeout`. Sharded: the run phase (`complete` / `failed`) or `timeout`. Empty when `wait: false`. |
-| `verdict` | Server-computed gate for sharded runs when `wait: true`: `pass` / `fail` / `timeout`. Empty for single-pod runs (use `status`). |
-| `test-run-id` | Test run UUID, populated when `wait: true` and the run reached a terminal status. |
+| `verdict` | Server-computed gate for sharded runs when `wait: true`: `pass` / `fail` / `timeout` / `pending` (terminal but no recognized verdict — gates as non-pass). Empty for single-pod runs (use `status`). |
+| `test-run-id` | Test run UUID. Single-pod: populated when `wait: true` and the run reached a terminal status. Sharded: the run id, set once dispatched (also on timeout). |
 
 ## Failure behavior
 

@@ -116,9 +116,9 @@ outputs:
   status:
     description: 'Final status when `wait` is true. For single-pod: passed / healed / failed / process-error / cancelled / timeout. For sharded: the run phase (complete / failed) or `timeout`. Empty when `wait` is false.'
   verdict:
-    description: 'Server-computed pass/fail gate for a sharded run when `wait` is true (`pass` / `fail` / `timeout`). Empty for single-pod runs (use `status`).'
+    description: 'Server-computed pass/fail gate for a sharded run when `wait` is true: `pass` / `fail` / `timeout` (poll deadline hit) / `pending` (terminal response carried no recognized verdict — gates as non-pass). Empty for single-pod runs (use `status`).'
   test-run-id:
-    description: 'Test run UUID, populated when `wait` is true and the run reaches a terminal status.'
+    description: 'Test run UUID. For single-pod runs, populated when `wait` is true and the run reaches a terminal status. For sharded runs, set to the run id once dispatched (also on timeout) so the run is always reachable.'
 
 runs:
   using: 'node20'
