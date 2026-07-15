@@ -25,13 +25,24 @@ type DispatchPlan = {
 // `verdict` are server-computed and are the ONLY fields CI should gate on:
 // they stay correct for sharded runs (partial pre-merge counts, empty
 // selections, dead-ends) where the raw `status` string alone would mislead.
+type Verdict = "pass" | "fail" | "pending";
+
 type StatusResponse = {
   status: string;
   isTerminal: boolean;
-  verdict: string; // "pass" | "fail" | "pending"
+  verdict: Verdict;
 };
 
+// fetchStatus outcomes: a parsed status, a transient hiccup worth retrying, or
+// a fatal condition (e.g. 404 — wrong `api-base-url`, or a Checksum API without
+// the run-status endpoint) that should stop the poll instead of spinning.
+type StatusResult =
+  | { kind: "ok"; value: StatusResponse }
+  | { kind: "retry"; reason: string }
+  | { kind: "fatal"; reason: string };
+
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
+const MAX_CONSECUTIVE_STATUS_FAILURES = 5;
 const SHARD_MIN = 2;
 const SHARD_MAX = 40;
 
@@ -137,23 +148,37 @@ async function waitForCompletion(
   );
 
   let lastStatus = "unknown";
-  let lastVerdict = "pending";
+  let lastVerdict: Verdict = "pending";
   let reachedTerminal = false;
+  let consecutiveFailures = 0;
 
   while (deadline === undefined || Date.now() < deadline) {
     const result = await fetchStatus(statusUrl, apiKey);
-    if (result === null) {
-      // Transient fetch failure — log and keep polling. Don't fail the
-      // action on a single status hiccup; the test run is still progressing.
-      core.warning("Status request failed; will retry.");
+    if (result.kind === "fatal") {
+      // Not transient (e.g. 404) — retrying can only burn CI minutes.
+      core.setFailed(`Cannot poll run status: ${result.reason}`);
+      return;
+    }
+    if (result.kind === "retry") {
+      // Transient hiccup — keep polling, but give up after too many in a row
+      // rather than spinning until the job timeout.
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_STATUS_FAILURES) {
+        core.setFailed(
+          `Status endpoint failed ${consecutiveFailures} times in a row: ${result.reason}`
+        );
+        return;
+      }
+      core.warning(`${result.reason}; will retry.`);
     } else {
-      lastStatus = result.status;
-      lastVerdict = result.verdict;
+      consecutiveFailures = 0;
+      lastStatus = result.value.status;
+      lastVerdict = result.value.verdict;
       core.info(`status=${lastStatus} verdict=${lastVerdict}`);
       // Gate on the server-computed `isTerminal`, never on the raw status
       // string — it stays correct across sharded merge, empty selections,
       // and dead-ends.
-      if (result.isTerminal) {
+      if (result.value.isTerminal) {
         reachedTerminal = true;
         break;
       }
@@ -162,9 +187,11 @@ async function waitForCompletion(
   }
 
   const finalStatus = reachedTerminal ? lastStatus : "timeout";
+  const finalVerdict: Verdict = reachedTerminal ? lastVerdict : "pending";
   const runUrl = `https://app.checksum.ai/#/test-runs/${runId}`;
 
   core.setOutput("status", finalStatus);
+  core.setOutput("verdict", finalVerdict);
   core.setOutput("test-run-id", runId);
 
   await core.summary
@@ -200,31 +227,42 @@ async function waitForCompletion(
 async function fetchStatus(
   url: string,
   apiKey: string
-): Promise<StatusResponse | null> {
+): Promise<StatusResult> {
   let response: Response;
   try {
     response = await fetch(url, {
       headers: { ChecksumAppCode: apiKey },
     });
-  } catch {
-    return null;
+  } catch (e) {
+    return { kind: "retry", reason: `Status request errored (${String(e)})` };
   }
   if (!response.ok) {
-    core.warning(`Status endpoint returned HTTP ${response.status}; will retry.`);
-    return null;
+    // A 404 means the run id or the status endpoint isn't there (wrong
+    // `api-base-url`, or an API without this endpoint) — retrying won't fix it.
+    if (response.status === 404) {
+      return {
+        kind: "fatal",
+        reason: `status endpoint returned HTTP 404 (${url}). Check \`api-base-url\`.`,
+      };
+    }
+    return {
+      kind: "retry",
+      reason: `Status endpoint returned HTTP ${response.status}`,
+    };
   }
   try {
     const body = (await response.json()) as Partial<StatusResponse>;
     if (typeof body.status !== "string" || typeof body.isTerminal !== "boolean") {
-      return null;
+      return { kind: "retry", reason: "Status response was missing fields" };
     }
+    const verdict: Verdict =
+      body.verdict === "pass" || body.verdict === "fail" ? body.verdict : "pending";
     return {
-      status: body.status,
-      isTerminal: body.isTerminal,
-      verdict: typeof body.verdict === "string" ? body.verdict : "pending",
+      kind: "ok",
+      value: { status: body.status, isTerminal: body.isTerminal, verdict },
     };
   } catch {
-    return null;
+    return { kind: "retry", reason: "Status response was not valid JSON" };
   }
 }
 
@@ -448,7 +486,8 @@ function planGrep(baseUrl: string, grep: string): DispatchPlan {
 function parseShardCountInput(): number | undefined {
   const raw = core.getInput("shard-count").trim();
   if (raw === "") return undefined;
-  const parsed = Number(raw);
+  // Plain decimal integers only — reject `0x10`, `1e1`, `8.0`, signs, etc.
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN;
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > SHARD_MAX) {
     throw new Error(
       `\`shard-count\` must be an integer between 1 and ${SHARD_MAX} (omit or 1 = non-sharded, ${SHARD_MIN}-${SHARD_MAX} = sharded), got: ${raw}`

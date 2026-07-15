@@ -153,7 +153,9 @@ Playwright worker, so total parallelism scales with `shard-count`.
 
 With `wait: true` the action polls the run by id and exits green only when the
 server's merged `verdict` is `pass`. Omit `shard-count` (or set `1`) for a
-non-sharded run. Sharding cannot be combined with `auto-heal`.
+non-sharded run. `shard-count` is honored in `grep` and `affected` modes;
+a `shard-count` of `2` or more cannot be combined with `auto-heal` (a
+`shard-count` of `1` still can).
 
 > **Prerequisite:** sharded runs merge each shard's report with the `checksumai`
 > CLI on the checked-out `branch`. That branch must have a `checksumai` version
@@ -206,7 +208,7 @@ unless overridden.
 | `collection-id` | no* | — | Single collection UUID. |
 | `branch` | no | — | Test-repo branch (grep mode only). Defaults to test repo's default branch. |
 | `env-overrides` | no | — | JSON object of per-run env vars (grep mode only). |
-| `shard-count` | no | — | Run in parallel across N shards (`2`–`40`) and merge into one run (grep mode only). Omit or `1` = non-sharded. Each shard runs one Playwright worker. Cannot be combined with `auto-heal`. |
+| `shard-count` | no | — | Run in parallel across N shards (`2`–`40`) and merge into one run (`grep` / `affected` modes). Omit or `1` = non-sharded. Each shard runs one Playwright worker. `2`+ can't be combined with `auto-heal`. |
 | `auto-heal` | no | `false` | Opt this run into auto-heal-on-failure. |
 | `auto-create-pr` | no | `true` | When auto-heal is enabled, push healed tests as a PR. |
 | `pr-number` | no | auto | Source PR number for heal progress comments. Auto-detected on `pull_request` events from the event payload, and on `push` events by looking up an open PR for the branch via the GH API (uses `github-token`, requires `permissions: pull-requests: read`). |
@@ -227,7 +229,8 @@ unless overridden.
 | `affected-test-ids` | JSON array from `/affected-tests` when `affected: true`. |
 | `grep-pattern` | Grep pattern sent to execution (affected mode, when tests were found). |
 | `job-name` | job name of the dispatched run for a non-sharded run; empty for a sharded run. Prefer `test-run-id`. |
-| `status` | Raw final run status when `wait: true` (e.g. `passed`, `failed`, `cancelled`, `timeout`). Empty when `wait: false`. The exit code gates on the server verdict, not this string. |
+| `status` | Raw final run status when `wait: true` (e.g. `passed`, `healed`, `failed`, `process-error`, `cancelled`, `timeout`). Empty when `wait: false`. The exit code gates on `verdict`, not this string. |
+| `verdict` | Server-computed CI verdict when `wait: true`: `pass`, `fail`, or `pending` (pending only on timeout). This is what the exit code reflects. Empty when `wait: false`. |
 | `test-run-id` | Test run UUID, returned at dispatch (non-sharded and sharded). Poll via `/public-api/v1/execution/status/run/{runId}`. |
 
 ## Failure behavior

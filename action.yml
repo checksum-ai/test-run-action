@@ -103,7 +103,9 @@ outputs:
   job-name:
     description: 'job name of the dispatched run for a non-sharded run; empty for a sharded run (a sharded run has no single job of its own). Prefer `test-run-id` for polling.'
   status:
-    description: 'Raw final run status when `wait` is true (e.g. passed / failed / cancelled / timeout). Empty when `wait` is false. The action''s exit code gates on the server-computed verdict, not this string.'
+    description: 'Raw final run status when `wait` is true (e.g. passed / healed / failed / process-error / cancelled / timeout). Empty when `wait` is false. The action''s exit code gates on `verdict`, not this string.'
+  verdict:
+    description: 'Server-computed CI verdict when `wait` is true: `pass`, `fail`, or `pending` (pending only if it timed out before terminal). This is what the exit code gates on. Empty when `wait` is false.'
   test-run-id:
     description: 'Test run UUID, returned at dispatch (both non-sharded and sharded). Poll it via /public-api/v1/execution/status/run/{runId}.'
 
