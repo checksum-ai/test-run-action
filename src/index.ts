@@ -21,20 +21,19 @@ type DispatchPlan = {
   payload: Record<string, unknown>;
 };
 
+// Shape of GET /public-api/v1/execution/status/run/:runId. `isTerminal` and
+// `verdict` are server-computed and are the ONLY fields CI should gate on:
+// they stay correct for sharded runs (partial pre-merge counts, empty
+// selections, dead-ends) where the raw `status` string alone would mislead.
 type StatusResponse = {
   status: string;
-  testRunId?: string;
+  isTerminal: boolean;
+  verdict: string; // "pass" | "fail" | "pending"
 };
 
 const TERMINAL_OK_STATUSES = new Set([200, 201, 202]);
-const TERMINAL_RUN_STATUSES = new Set([
-  "passed",
-  "healed",
-  "failed",
-  "process-error",
-  "cancelled",
-]);
-const SUCCESS_RUN_STATUSES = new Set(["passed", "healed"]);
+const SHARD_MIN = 2;
+const SHARD_MAX = 40;
 
 async function run(): Promise<void> {
   const apiKey = core.getInput("api-key", { required: true });
@@ -69,9 +68,13 @@ async function run(): Promise<void> {
     return;
   }
 
-  let parsed: { name?: string } = {};
+  let parsed: { name?: string | null; runId?: string; sharded?: boolean } = {};
   try {
-    parsed = JSON.parse(bodyText) as { name?: string };
+    parsed = JSON.parse(bodyText) as {
+      name?: string | null;
+      runId?: string;
+      sharded?: boolean;
+    };
   } catch {
     core.setFailed(
       `Execution dispatch returned HTTP ${response.status} but body was not valid JSON: ${bodyText}`
@@ -79,43 +82,53 @@ async function run(): Promise<void> {
     return;
   }
 
-  const jobName = parsed.name;
-  if (!jobName) {
+  // Poll by `runId`: it is returned for BOTH non-sharded and sharded runs, and
+  // its status endpoint is the only one that is correct for sharded runs
+  // (`name` is null when sharded, so job-name polling can't work).
+  const runId = parsed.runId;
+  if (!runId) {
     core.setFailed(
-      `Execution dispatch returned HTTP ${response.status} but response had no "name" field: ${bodyText}`
+      `Execution dispatch returned HTTP ${response.status} but response had no "runId" field: ${bodyText}`
     );
     return;
   }
+  const jobName = parsed.name ?? "";
+  const sharded = parsed.sharded === true;
 
   core.setOutput("job-name", jobName);
-  core.info(`Dispatched. Job name: ${jobName}`);
+  core.setOutput("test-run-id", runId);
+  core.info(
+    `Dispatched ${sharded ? "sharded" : "non-sharded"} run. runId: ${runId}${jobName ? ` (job: ${jobName})` : ""}`
+  );
 
   if (!core.getBooleanInput("wait")) {
     await core.summary
       .addHeading("Checksum AI test run dispatched", 3)
       .addList([
         `Mode: \`${plan.mode}\``,
-        `Job name: \`${jobName}\``,
+        `Run id: \`${runId}\``,
+        `Sharded: \`${sharded ? "yes" : "no"}\``,
         `Auto-heal: \`${core.getBooleanInput("auto-heal") ? "enabled" : "disabled"}\``,
       ])
       .write();
     return;
   }
 
-  await waitForCompletion(baseUrl, apiKey, jobName, plan.mode);
+  await waitForCompletion(baseUrl, apiKey, runId, plan.mode, sharded);
 }
 
 async function waitForCompletion(
   baseUrl: string,
   apiKey: string,
-  jobName: string,
-  mode: ExecMode
+  runId: string,
+  mode: ExecMode,
+  sharded: boolean
 ): Promise<void> {
   const pollIntervalMs = parsePositiveIntInput("poll-interval-seconds") * 1000;
   const timeoutMs = parseOptionalPositiveIntInput("wait-timeout-seconds");
   const deadline =
     timeoutMs === undefined ? undefined : Date.now() + timeoutMs * 1000;
-  const statusUrl = `${baseUrl}/public-api/v2/execution/status/${encodeURIComponent(jobName)}`;
+  const statusUrl = `${baseUrl}/public-api/v1/execution/status/run/${encodeURIComponent(runId)}`;
 
   core.info(
     `Waiting for terminal status (poll every ${pollIntervalMs / 1000}s, timeout ${
@@ -124,7 +137,8 @@ async function waitForCompletion(
   );
 
   let lastStatus = "unknown";
-  let testRunId = "";
+  let lastVerdict = "pending";
+  let reachedTerminal = false;
 
   while (deadline === undefined || Date.now() < deadline) {
     const result = await fetchStatus(statusUrl, apiKey);
@@ -134,53 +148,53 @@ async function waitForCompletion(
       core.warning("Status request failed; will retry.");
     } else {
       lastStatus = result.status;
-      if (result.testRunId) testRunId = result.testRunId;
-      core.info(`status=${lastStatus}`);
-      if (TERMINAL_RUN_STATUSES.has(lastStatus)) break;
+      lastVerdict = result.verdict;
+      core.info(`status=${lastStatus} verdict=${lastVerdict}`);
+      // Gate on the server-computed `isTerminal`, never on the raw status
+      // string — it stays correct across sharded merge, empty selections,
+      // and dead-ends.
+      if (result.isTerminal) {
+        reachedTerminal = true;
+        break;
+      }
     }
     await sleep(pollIntervalMs);
   }
 
-  const reachedTerminal = TERMINAL_RUN_STATUSES.has(lastStatus);
   const finalStatus = reachedTerminal ? lastStatus : "timeout";
-  const runUrl = testRunId
-    ? `https://app.checksum.ai/#/test-runs/${testRunId}`
-    : "";
+  const runUrl = `https://app.checksum.ai/#/test-runs/${runId}`;
 
   core.setOutput("status", finalStatus);
-  if (testRunId) core.setOutput("test-run-id", testRunId);
+  core.setOutput("test-run-id", runId);
 
   await core.summary
     .addHeading("Checksum AI test run", 3)
     .addList(
       [
         `Mode: \`${mode}\``,
-        `Job name: \`${jobName}\``,
+        `Sharded: \`${sharded ? "yes" : "no"}\``,
         `Final status: \`${finalStatus}\``,
-        runUrl ? `Test run: ${runUrl}` : "",
+        `Verdict: \`${reachedTerminal ? lastVerdict : "pending"}\``,
+        `Test run: ${runUrl}`,
       ].filter(Boolean)
     )
     .write();
 
   if (!reachedTerminal) {
     core.setFailed(
-      `Timed out after ${timeoutMs}s waiting for run to terminate (last status: ${lastStatus}).${
-        runUrl ? ` View: ${runUrl}` : ""
-      }`
+      `Timed out after ${timeoutMs}s waiting for run to terminate (last status: ${lastStatus}). View: ${runUrl}`
     );
     return;
   }
-  if (!SUCCESS_RUN_STATUSES.has(lastStatus)) {
+  // The verdict is the CI gate: "pass" only for a genuinely passing run
+  // (server already fails-closed on empty selections and pre-merge state).
+  if (lastVerdict !== "pass") {
     core.setFailed(
-      `Test run terminated with status: ${lastStatus}.${
-        runUrl ? ` View: ${runUrl}` : ""
-      }`
+      `Test run did not pass (verdict: ${lastVerdict}, status: ${lastStatus}). View: ${runUrl}`
     );
     return;
   }
-  core.info(
-    `Test run terminated with status: ${lastStatus}.${runUrl ? ` View: ${runUrl}` : ""}`
-  );
+  core.info(`Test run passed (status: ${lastStatus}). View: ${runUrl}`);
 }
 
 async function fetchStatus(
@@ -201,11 +215,13 @@ async function fetchStatus(
   }
   try {
     const body = (await response.json()) as Partial<StatusResponse>;
-    if (typeof body.status !== "string") return null;
+    if (typeof body.status !== "string" || typeof body.isTerminal !== "boolean") {
+      return null;
+    }
     return {
       status: body.status,
-      testRunId:
-        typeof body.testRunId === "string" ? body.testRunId : undefined,
+      isTerminal: body.isTerminal,
+      verdict: typeof body.verdict === "string" ? body.verdict : "pending",
     };
   } catch {
     return null;
@@ -388,6 +404,7 @@ function warnOnIgnoredInputs(mode: string): void {
   const ignored: string[] = [];
   if (core.getInput("branch")) ignored.push("`branch`");
   if (core.getInput("env-overrides")) ignored.push("`env-overrides`");
+  if (core.getInput("shard-count")) ignored.push("`shard-count`");
   if (ignored.length === 0) return;
   const verb = ignored.length === 1 ? "is" : "are";
   core.warning(
@@ -406,11 +423,38 @@ function planGrep(baseUrl: string, grep: string): DispatchPlan {
     payload.envOverrides = parseJsonInput("env-overrides", envOverridesRaw);
   }
 
+  const shardCount = parseShardCountInput();
+  if (shardCount !== undefined) {
+    // Sharding and auto-heal are separate execution modes on the backend
+    // (the API rejects the combination). Fail early with a clear message instead of a raw 400.
+    if (core.getBooleanInput("auto-heal")) {
+      throw new Error(
+        "`shard-count` (>= 2) cannot be combined with `auto-heal`. Use one or the other, or set `shard-count: 1`."
+      );
+    }
+    payload.shardCount = shardCount;
+  }
+
   return {
     mode: "grep",
     url: `${baseUrl}/public-api/v2/execution/grep`,
     payload,
   };
+}
+
+// Returns the shard count only when it should fan out (>= 2). Omitted or `1`
+// returns undefined (non-sharded — no `shardCount` in the payload). Anything
+// else (non-integer, < 1, > 40) is a hard input error.
+function parseShardCountInput(): number | undefined {
+  const raw = core.getInput("shard-count").trim();
+  if (raw === "") return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > SHARD_MAX) {
+    throw new Error(
+      `\`shard-count\` must be an integer between 1 and ${SHARD_MAX} (omit or 1 = non-sharded, ${SHARD_MIN}-${SHARD_MAX} = sharded), got: ${raw}`
+    );
+  }
+  return parsed >= SHARD_MIN ? parsed : undefined;
 }
 
 function planSuite(baseUrl: string, suiteIdsInput: string): DispatchPlan {
