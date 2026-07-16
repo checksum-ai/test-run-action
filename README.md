@@ -172,7 +172,7 @@ a `shard-count` of `2` or more cannot be combined with `auto-heal` (a
 > merge can fail to complete, delaying the run's terminal `verdict` well past a
 > normal run's duration. Update it (e.g. `npm install checksumai@latest`)
 > before enabling sharding, and pair `wait: true` with `wait-timeout-seconds`
-> so a stale version bounds runner time instead of riding the job timeout.
+> so the action bounds runner time if a stale runtime delays report merging.
 
 ## Auto-heal
 
