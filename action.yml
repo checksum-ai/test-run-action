@@ -45,6 +45,9 @@ inputs:
   env-overrides:
     description: 'JSON object of per-run environment variable overrides, e.g. ''{"BASE_URL":"https://pr-123.preview.example.com"}''. Only honored in grep mode.'
     required: false
+  shard-count:
+    description: 'Run the selected tests in parallel across N shards (2–40) and merge the results into one Checksum run. Omit (or 1) for a non-sharded run. Each shard runs one Playwright worker, so total parallelism scales with `shard-count`. Honored in `grep` and `affected` modes. A `shard-count` of 2 or more cannot be combined with `auto-heal`.'
+    required: false
 
   # Auto-heal options.
   auto-heal:
@@ -98,11 +101,13 @@ outputs:
   grep-pattern:
     description: 'Grep pattern derived from affected test ids and sent to /execution/grep. Set only when `affected` found tests to run.'
   job-name:
-    description: 'Name of the dispatched test-run job, returned by the execution endpoint. Use it to query status via /public-api/v2/execution/status/{jobName}.'
+    description: 'job name of the dispatched run for a non-sharded run; empty for a sharded run (a sharded run has no single job of its own). Prefer `test-run-id` for polling.'
   status:
-    description: 'Final terminal status when `wait` is true (passed / healed / failed / process-error / cancelled / timeout). Empty when `wait` is false.'
+    description: 'Raw final run status when `wait` is true (e.g. passed / healed / failed / process-error / cancelled / timeout). Empty when `wait` is false. The action''s exit code gates on `verdict`, not this string.'
+  verdict:
+    description: 'Server-computed CI verdict when `wait` is true: `pass`, `fail`, or `pending` (pending only if it timed out before terminal). This is what the exit code gates on. Empty when `wait` is false.'
   test-run-id:
-    description: 'Test run UUID, populated when `wait` is true and the run reaches a terminal status.'
+    description: 'Test run UUID, returned at dispatch (both non-sharded and sharded). Poll it via /public-api/v1/execution/status/run/{runId}.'
 
 runs:
   using: 'node20'
