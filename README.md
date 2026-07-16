@@ -3,8 +3,15 @@
 GitHub Action that triggers a Checksum AI test run from CI in one step. Wraps
 the public-API `execution/*` endpoints and (optionally) opts the run into
 auto-heal-on-failure. Notification of pass/fail and any healed PRs is delivered
-via the standard Checksum PR-comment pipeline — this action is fire-and-forget
-and exits as soon as the dispatch is accepted.
+via the standard Checksum PR-comment pipeline. By default (`wait: false`) the
+action is fire-and-forget and exits as soon as the dispatch is accepted; set
+`wait: true` to gate the workflow on the run's outcome instead (see
+[Failure behavior](#failure-behavior)).
+
+> **Upgrading from `@v1`?** `@v2` adds sharding and changes exit-code
+> semantics — notably, an empty test selection now fails the step instead of
+> passing. See the [v2.0.0 release notes](https://github.com/checksum-ai/test-run-action/releases/tag/v2.0.0)
+> before moving off `@v1`.
 
 ## Quick start
 
@@ -135,11 +142,10 @@ run (same as the CLI dry-run / empty-affected behavior).
 
 ## Sharding
 
-Set `shard-count` (honored in `grep` and `affected` modes) to split the
-selected tests across N parallel shards (`2`–`40`) and merge the results into
-one Checksum run — useful for large suites where a single run is too slow for
-CI feedback. Each shard runs one Playwright worker, so total parallelism
-scales with `shard-count`.
+Set `shard-count` to split the selected tests across N parallel shards
+(`2`–`40`) and merge the results into one Checksum run — useful for large
+suites where a single run is too slow for CI feedback. Each shard runs one
+Playwright worker, so total parallelism scales with `shard-count`.
 
 ```yaml
 - uses: checksum-ai/test-run-action@v2
@@ -150,7 +156,7 @@ scales with `shard-count`.
     env-overrides: '{"BASE_URL":"https://pr-${{ github.event.pull_request.number }}.preview.example.com"}'
     shard-count: 8
     wait: true                    # gate the PR check on the merged verdict
-    wait-timeout-seconds: 1800    # fail fast instead of riding the job timeout
+    wait-timeout-seconds: 1800    # bound runner time instead of riding the job timeout
 ```
 
 With `wait: true` the action polls the run by id and exits green only when the
@@ -161,11 +167,12 @@ a `shard-count` of `2` or more cannot be combined with `auto-heal` (a
 
 > **Prerequisite:** sharded runs merge each shard's report with the `checksumai`
 > CLI on the checked-out `branch`. That branch must be on `checksumai@4.4.0` or
-> later — the first stable release with sharded-report merging — or the shards
-> run but never combine, and the run never returns a final `verdict`. Update it
-> (e.g. `npm install checksumai@latest`) before enabling sharding, and pair
-> `wait: true` with `wait-timeout-seconds` so a stale version fails fast
-> instead of hanging the runner until the job timeout.
+> later — the minimum production-supported version for sharded runs (earlier
+> releases have report-merging code but hit fixed reliability issues) — or the
+> merge can fail to complete, delaying the run's terminal `verdict` well past a
+> normal run's duration. Update it (e.g. `npm install checksumai@latest`)
+> before enabling sharding, and pair `wait: true` with `wait-timeout-seconds`
+> so a stale version bounds runner time instead of riding the job timeout.
 
 ## Auto-heal
 
