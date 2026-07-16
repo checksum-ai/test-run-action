@@ -9,7 +9,7 @@ and exits as soon as the dispatch is accepted.
 ## Quick start
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     grep: 'Home Page Title'
@@ -52,7 +52,7 @@ permissions:
   pull-requests: read   # so the action can read the PR's changed files
 
 steps:
-  - uses: checksum-ai/test-run-action@v1
+  - uses: checksum-ai/test-run-action@v2
     with:
       api-key: ${{ secrets.CHECKSUM_API_KEY }}
       affected: true
@@ -71,7 +71,7 @@ Or compute the diff locally from a checkout:
   with:
     fetch-depth: 0
 
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     affected: true
@@ -84,7 +84,7 @@ Or compute the diff locally from a checkout:
 Or pass paths explicitly (no git diff on the runner):
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     affected: true
@@ -95,7 +95,7 @@ Or pass paths explicitly (no git diff on the runner):
 Dual-repo CI (diff the code repo, dispatch from the workflow repo):
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     affected: true
@@ -108,26 +108,26 @@ run (same as the CLI dry-run / empty-affected behavior).
 
 ```yaml
 # Grep — pattern match on test names. Supports `branch` and `env-overrides`.
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     grep: 'checkout'
     env-overrides: '{"BASE_URL":"https://pr-${{ github.event.pull_request.number }}.preview.example.com"}'
 
 # Suite — pass one or more suite UUIDs.
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     suite-ids: 'a1b2c3d4-...,e5f6g7h8-...'
 
 # Tests — explicit UUIDs.
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     test-ids: 'a1b2c3d4-...,e5f6g7h8-...'
 
 # Collection — single UUID.
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     collection-id: 'd9e8f7a6-...'
@@ -135,20 +135,22 @@ run (same as the CLI dry-run / empty-affected behavior).
 
 ## Sharding
 
-Set `shard-count` (grep mode only) to split the selected tests across N parallel
-shards (`2`–`40`) and merge the results into one Checksum run — useful for large
-suites where a single run is too slow for CI feedback. Each shard runs one
-Playwright worker, so total parallelism scales with `shard-count`.
+Set `shard-count` (honored in `grep` and `affected` modes) to split the
+selected tests across N parallel shards (`2`–`40`) and merge the results into
+one Checksum run — useful for large suites where a single run is too slow for
+CI feedback. Each shard runs one Playwright worker, so total parallelism
+scales with `shard-count`.
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     grep: '@smoke'
     branch: ${{ github.head_ref }}
     env-overrides: '{"BASE_URL":"https://pr-${{ github.event.pull_request.number }}.preview.example.com"}'
     shard-count: 8
-    wait: true          # gate the PR check on the merged verdict
+    wait: true                    # gate the PR check on the merged verdict
+    wait-timeout-seconds: 1800    # fail fast instead of riding the job timeout
 ```
 
 With `wait: true` the action polls the run by id and exits green only when the
@@ -158,9 +160,12 @@ a `shard-count` of `2` or more cannot be combined with `auto-heal` (a
 `shard-count` of `1` still can).
 
 > **Prerequisite:** sharded runs merge each shard's report with the `checksumai`
-> CLI on the checked-out `branch`. That branch must have a `checksumai` version
-> recent enough to support report merging — update it (e.g.
-> `npm install checksumai@latest`) before enabling sharding.
+> CLI on the checked-out `branch`. That branch must be on `checksumai@4.4.0` or
+> later — the first stable release with sharded-report merging — or the shards
+> run but never combine, and the run never returns a final `verdict`. Update it
+> (e.g. `npm install checksumai@latest`) before enabling sharding, and pair
+> `wait: true` with `wait-timeout-seconds` so a stale version fails fast
+> instead of hanging the runner until the job timeout.
 
 ## Auto-heal
 
@@ -169,7 +174,7 @@ terminates with status `failed`, healing sessions spawn automatically, post
 progress as a comment on the PR, and (by default) push healed tests as a PR.
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     grep: 'checkout'
@@ -180,7 +185,7 @@ To dispatch heal sessions without auto-creating a PR (e.g., to inspect them
 manually first):
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     grep: 'checkout'
@@ -252,7 +257,7 @@ would mislead a raw status check):
 | timeout reached before terminal | 1 (red) |
 
 ```yaml
-- uses: checksum-ai/test-run-action@v1
+- uses: checksum-ai/test-run-action@v2
   with:
     api-key: ${{ secrets.CHECKSUM_API_KEY }}
     grep: 'checkout'
