@@ -30465,11 +30465,8 @@ function planGrep(baseUrl, grep) {
     }
     const shardCount = parseShardCountInput();
     if (shardCount !== undefined) {
-        // Sharding and auto-heal are separate execution modes on the backend
-        // (the API rejects the combination). Fail early with a clear message instead of a raw 400.
-        if (core.getBooleanInput("auto-heal")) {
-            throw new Error("`shard-count` (>= 2) cannot be combined with `auto-heal`. Use one or the other, or set `shard-count: 1`.");
-        }
+        // Composes with `auto-heal`: the API evaluates the heal once, from the
+        // merged report, after every shard finishes.
         payload.shardCount = shardCount;
     }
     return {
