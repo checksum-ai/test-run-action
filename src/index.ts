@@ -463,8 +463,6 @@ function planGrep(baseUrl: string, grep: string): DispatchPlan {
 
   const shardCount = parseShardCountInput();
   if (shardCount !== undefined) {
-    // Composes with `auto-heal`: the API evaluates the heal once, from the
-    // merged report, after every shard finishes.
     payload.shardCount = shardCount;
   }
 

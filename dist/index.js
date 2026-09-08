@@ -30465,8 +30465,6 @@ function planGrep(baseUrl, grep) {
     }
     const shardCount = parseShardCountInput();
     if (shardCount !== undefined) {
-        // Composes with `auto-heal`: the API evaluates the heal once, from the
-        // merged report, after every shard finishes.
         payload.shardCount = shardCount;
     }
     return {
