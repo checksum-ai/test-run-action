@@ -31,6 +31,12 @@ type StatusResponse = {
   status: string;
   isTerminal: boolean;
   verdict: Verdict;
+  // Infra detail behind a failed/process-error status, e.g. a sharded run that
+  // lost a shard ("1/8 shards failed; merged report is missing their tests").
+  // A run like that reports `failed` when the surviving shards had real
+  // failures, so without this the log cannot tell "tests failed" from "tests
+  // failed and part of the suite never ran".
+  failureReason: string | null;
 };
 
 // fetchStatus outcomes: a parsed status, a transient hiccup worth retrying, or
@@ -149,6 +155,7 @@ async function waitForCompletion(
 
   let lastStatus = "unknown";
   let lastVerdict: Verdict = "pending";
+  let lastFailureReason: string | null = null;
   let reachedTerminal = false;
   let consecutiveFailures = 0;
 
@@ -174,6 +181,7 @@ async function waitForCompletion(
       consecutiveFailures = 0;
       lastStatus = result.value.status;
       lastVerdict = result.value.verdict;
+      lastFailureReason = result.value.failureReason;
       core.info(`status=${lastStatus} verdict=${lastVerdict}`);
       // Gate on the server-computed `isTerminal`, never on the raw status
       // string — it stays correct across sharded merge, empty selections,
@@ -202,6 +210,7 @@ async function waitForCompletion(
         `Sharded: \`${sharded ? "yes" : "no"}\``,
         `Final status: \`${finalStatus}\``,
         `Verdict: \`${reachedTerminal ? lastVerdict : "pending"}\``,
+        lastFailureReason ? `Failure reason: ${lastFailureReason}` : "",
         `Test run: ${runUrl}`,
       ].filter(Boolean)
     )
@@ -216,8 +225,9 @@ async function waitForCompletion(
   // The verdict is the CI gate: "pass" only for a genuinely passing run
   // (server already fails-closed on empty selections and pre-merge state).
   if (lastVerdict !== "pass") {
+    const reason = lastFailureReason ? ` Reason: ${lastFailureReason}.` : "";
     core.setFailed(
-      `Test run did not pass (verdict: ${lastVerdict}, status: ${lastStatus}). View: ${runUrl}`
+      `Test run did not pass (verdict: ${lastVerdict}, status: ${lastStatus}).${reason} View: ${runUrl}`
     );
     return;
   }
@@ -259,7 +269,15 @@ async function fetchStatus(
       body.verdict === "pass" || body.verdict === "fail" ? body.verdict : "pending";
     return {
       kind: "ok",
-      value: { status: body.status, isTerminal: body.isTerminal, verdict },
+      value: {
+        status: body.status,
+        isTerminal: body.isTerminal,
+        verdict,
+        failureReason:
+          typeof body.failureReason === "string" && body.failureReason
+            ? body.failureReason
+            : null,
+      },
     };
   } catch {
     return { kind: "retry", reason: "Status response was not valid JSON" };
@@ -463,13 +481,6 @@ function planGrep(baseUrl: string, grep: string): DispatchPlan {
 
   const shardCount = parseShardCountInput();
   if (shardCount !== undefined) {
-    // Sharding and auto-heal are separate execution modes on the backend
-    // (the API rejects the combination). Fail early with a clear message instead of a raw 400.
-    if (core.getBooleanInput("auto-heal")) {
-      throw new Error(
-        "`shard-count` (>= 2) cannot be combined with `auto-heal`. Use one or the other, or set `shard-count: 1`."
-      );
-    }
     payload.shardCount = shardCount;
   }
 
