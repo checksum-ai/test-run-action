@@ -162,7 +162,7 @@ Playwright worker, so total parallelism scales with `shard-count`.
 With `wait: true` the action polls the run by id and exits green only when the
 server's merged `verdict` is `pass`. Omit `shard-count` (or set `1`) for a
 non-sharded run. `shard-count` is honored in `grep` and `affected` modes.
-Composes with `auto-heal`: the heal runs once, against the merged report, after every shard finishes.
+Composes with `auto-heal`: once the shards are merged, a merged run that ends `failed` is healed exactly as a non-sharded run would be.
 
 > **Prerequisite:** sharded runs merge each shard's report with the `checksumai`
 > CLI on the checked-out `branch`. That branch must be on `checksumai@4.4.0` or
@@ -172,6 +172,7 @@ Composes with `auto-heal`: the heal runs once, against the merged report, after 
 > normal run's duration. Update it (e.g. `npm install checksumai@latest`)
 > before enabling sharding, and pair `wait: true` with `wait-timeout-seconds`
 > so the action bounds runner time if a stale runtime delays report merging.
+> A stale runtime also means the shards never merge, so an `auto-heal` request on that run is never evaluated.
 
 ## Auto-heal
 

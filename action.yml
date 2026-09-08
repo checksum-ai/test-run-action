@@ -46,7 +46,7 @@ inputs:
     description: 'JSON object of per-run environment variable overrides, e.g. ''{"BASE_URL":"https://pr-123.preview.example.com"}''. Only honored in grep mode.'
     required: false
   shard-count:
-    description: 'Run the selected tests in parallel across N shards (2–40) and merge the results into one Checksum run. Omit (or 1) for a non-sharded run. Each shard runs one Playwright worker, so total parallelism scales with `shard-count`. Honored in `grep` and `affected` modes. Composes with `auto-heal`: the heal runs once, against the merged report, after every shard finishes.'
+    description: 'Run the selected tests in parallel across N shards (2–40) and merge the results into one Checksum run. Omit (or 1) for a non-sharded run. Each shard runs one Playwright worker, so total parallelism scales with `shard-count`. Honored in `grep` and `affected` modes. Composes with `auto-heal`: once the shards are merged, a merged run that ends `failed` is healed exactly as a non-sharded run would be.'
     required: false
 
   # Auto-heal options.
