@@ -30208,6 +30208,7 @@ async function waitForCompletion(baseUrl, apiKey, runId, mode, sharded) {
     core.info(`Waiting for terminal status (poll every ${pollIntervalMs / 1000}s, timeout ${deadline === undefined ? "none" : `${timeoutMs}s`})…`);
     let lastStatus = "unknown";
     let lastVerdict = "pending";
+    let lastFailureReason = null;
     let reachedTerminal = false;
     let consecutiveFailures = 0;
     while (deadline === undefined || Date.now() < deadline) {
@@ -30231,6 +30232,7 @@ async function waitForCompletion(baseUrl, apiKey, runId, mode, sharded) {
             consecutiveFailures = 0;
             lastStatus = result.value.status;
             lastVerdict = result.value.verdict;
+            lastFailureReason = result.value.failureReason;
             core.info(`status=${lastStatus} verdict=${lastVerdict}`);
             // Gate on the server-computed `isTerminal`, never on the raw status
             // string — it stays correct across sharded merge, empty selections,
@@ -30255,6 +30257,7 @@ async function waitForCompletion(baseUrl, apiKey, runId, mode, sharded) {
         `Sharded: \`${sharded ? "yes" : "no"}\``,
         `Final status: \`${finalStatus}\``,
         `Verdict: \`${reachedTerminal ? lastVerdict : "pending"}\``,
+        lastFailureReason ? `Failure reason: ${lastFailureReason}` : "",
         `Test run: ${runUrl}`,
     ].filter(Boolean))
         .write();
@@ -30265,7 +30268,8 @@ async function waitForCompletion(baseUrl, apiKey, runId, mode, sharded) {
     // The verdict is the CI gate: "pass" only for a genuinely passing run
     // (server already fails-closed on empty selections and pre-merge state).
     if (lastVerdict !== "pass") {
-        core.setFailed(`Test run did not pass (verdict: ${lastVerdict}, status: ${lastStatus}). View: ${runUrl}`);
+        const reason = lastFailureReason ? ` Reason: ${lastFailureReason}.` : "";
+        core.setFailed(`Test run did not pass (verdict: ${lastVerdict}, status: ${lastStatus}).${reason} View: ${runUrl}`);
         return;
     }
     core.info(`Test run passed (status: ${lastStatus}). View: ${runUrl}`);
@@ -30302,7 +30306,14 @@ async function fetchStatus(url, apiKey) {
         const verdict = body.verdict === "pass" || body.verdict === "fail" ? body.verdict : "pending";
         return {
             kind: "ok",
-            value: { status: body.status, isTerminal: body.isTerminal, verdict },
+            value: {
+                status: body.status,
+                isTerminal: body.isTerminal,
+                verdict,
+                failureReason: typeof body.failureReason === "string" && body.failureReason
+                    ? body.failureReason
+                    : null,
+            },
         };
     }
     catch {
@@ -30465,11 +30476,6 @@ function planGrep(baseUrl, grep) {
     }
     const shardCount = parseShardCountInput();
     if (shardCount !== undefined) {
-        // Sharding and auto-heal are separate execution modes on the backend
-        // (the API rejects the combination). Fail early with a clear message instead of a raw 400.
-        if (core.getBooleanInput("auto-heal")) {
-            throw new Error("`shard-count` (>= 2) cannot be combined with `auto-heal`. Use one or the other, or set `shard-count: 1`.");
-        }
         payload.shardCount = shardCount;
     }
     return {
